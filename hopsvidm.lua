@@ -3,6 +3,8 @@ local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
 local CoreGui = game:GetService("CoreGui")
 local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
 
 local LocalPlayer = Players.LocalPlayer
 local PLACE_ID = game.PlaceId
@@ -21,6 +23,8 @@ local Blacklist = {}
 local IsScanning = false
 local LoaderActive = false
 local loaderCoroutine = nil
+local PulseActive = false
+local pulseConn = nil
 
 if CoreGui:FindFirstChild("HopUI") then CoreGui.HopUI:Destroy() end
 
@@ -33,10 +37,20 @@ ScreenGui.DisplayOrder = 999999
 ScreenGui.Parent = CoreGui
 
 local Container = Instance.new("Frame")
-Container.Size = UDim2.new(0, 200, 0, 110)
-Container.Position = UDim2.new(0, 20, 0.5, -55)
+Container.Size = UDim2.new(0, 200, 0, 115)
+Container.Position = UDim2.new(0, 20, 0.5, -57)
 Container.BackgroundTransparency = 1
 Container.Parent = ScreenGui
+
+local Glow = Instance.new("ImageLabel")
+Glow.Size = UDim2.new(0, 130, 0, 130)
+Glow.Position = UDim2.new(0.5, -65, 0, -25)
+Glow.BackgroundTransparency = 1
+Glow.Image = "rbxassetid://5028857084"
+Glow.ImageColor3 = Color3.fromRGB(60, 180, 120)
+Glow.ImageTransparency = 0.5
+Glow.ZIndex = 0
+Glow.Parent = Container
 
 local Btn = Instance.new("TextButton")
 Btn.Size = UDim2.new(0, 80, 0, 80)
@@ -48,15 +62,30 @@ Btn.Font = Enum.Font.GothamBold
 Btn.TextSize = 18
 Btn.AutoButtonColor = false
 Btn.Active = true
+Btn.ZIndex = 2
 Btn.Parent = Container
 
 local BtnCorner = Instance.new("UICorner")
 BtnCorner.CornerRadius = UDim.new(1, 0)
 BtnCorner.Parent = Btn
 
+local BtnGradient = Instance.new("UIGradient")
+BtnGradient.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(80, 220, 150)),
+    ColorSequenceKeypoint.new(1, Color3.fromRGB(40, 140, 100))
+})
+BtnGradient.Rotation = 90
+BtnGradient.Parent = Btn
+
+local BtnStroke = Instance.new("UIStroke")
+BtnStroke.Color = Color3.fromRGB(255, 255, 255)
+BtnStroke.Thickness = 1.5
+BtnStroke.Transparency = 0.5
+BtnStroke.Parent = Btn
+
 local StatusLabel = Instance.new("TextLabel")
 StatusLabel.Size = UDim2.new(1, 0, 0, 22)
-StatusLabel.Position = UDim2.new(0, 0, 0, 84)
+StatusLabel.Position = UDim2.new(0, 0, 0, 88)
 StatusLabel.BackgroundColor3 = Color3.fromRGB(20, 22, 30)
 StatusLabel.BackgroundTransparency = 0.1
 StatusLabel.BorderSizePixel = 0
@@ -64,7 +93,7 @@ StatusLabel.Text = "Sẵn sàng"
 StatusLabel.TextColor3 = Color3.fromRGB(200, 220, 255)
 StatusLabel.Font = Enum.Font.GothamBold
 StatusLabel.TextSize = 11
-StatusLabel.TextWrapped = false
+StatusLabel.ZIndex = 2
 StatusLabel.Parent = Container
 
 local StatusCorner = Instance.new("UICorner")
@@ -72,6 +101,54 @@ StatusCorner.CornerRadius = UDim.new(0, 6)
 StatusCorner.Parent = StatusLabel
 
 local SPINNER = {"|", "/", "-", "\\"}
+
+local function startPulse(color)
+    PulseActive = false
+    if pulseConn then
+        pulseConn:Disconnect()
+        pulseConn = nil
+    end
+    Glow.ImageColor3 = color or Color3.fromRGB(60, 180, 120)
+    PulseActive = true
+
+    local startTime = tick()
+    pulseConn = RunService.Heartbeat:Connect(function()
+        if not PulseActive then return end
+        if not Glow or not Glow.Parent then return end
+        local t = (tick() - startTime) * 2
+        local wave = (math.sin(t) + 1) / 2
+        Glow.ImageTransparency = 0.7 - (wave * 0.35)
+        Glow.Size = UDim2.new(0, 120 + wave * 25, 0, 120 + wave * 25)
+        Glow.Position = UDim2.new(0.5, -(120 + wave * 25) / 2, 0, -22 - (wave * 25) / 2)
+    end)
+end
+
+local function stopPulse()
+    PulseActive = false
+    if pulseConn then
+        pulseConn:Disconnect()
+        pulseConn = nil
+    end
+    TweenService:Create(Glow, TweenInfo.new(0.3), {
+        ImageTransparency = 0.85,
+        Size = UDim2.new(0, 120, 0, 120),
+        Position = UDim2.new(0.5, -60, 0, -20)
+    }):Play()
+end
+
+local function pressDown()
+    TweenService:Create(Btn, TweenInfo.new(0.08, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+        Size = UDim2.new(0, 72, 0, 72),
+        Position = UDim2.new(0.5, -36, 0, 4)
+    }):Play()
+end
+
+local function pressUp()
+    TweenService:Create(Btn, TweenInfo.new(0.12, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+        Size = UDim2.new(0, 80, 0, 80),
+        Position = UDim2.new(0.5, -40, 0, 0)
+    }):Play()
+end
 
 local function startLoading(text)
     LoaderActive = false
@@ -84,7 +161,7 @@ local function startLoading(text)
             StatusLabel.Text = text .. " " .. SPINNER[i]
             i = i + 1
             if i > #SPINNER then i = 1 end
-            task.wait(0.15)
+            task.wait(0.13)
         end
     end)
 end
@@ -110,7 +187,7 @@ Btn.InputBegan:Connect(function(input)
         dragMoved = false
         dragStartInput = input.Position
         dragStartPos = Container.Position
-        Btn.BackgroundColor3 = Color3.fromRGB(40, 140, 90)
+        pressDown()
     end
 end)
 
@@ -135,12 +212,13 @@ UserInputService.InputEnded:Connect(function(input)
     if input.UserInputType ~= Enum.UserInputType.MouseButton1
         and input.UserInputType ~= Enum.UserInputType.Touch then return end
     dragActive = false
-    Btn.BackgroundColor3 = Color3.fromRGB(60, 180, 120)
+    pressUp()
     if not dragMoved then
         task.spawn(function()
             local ok = pcall(doHop)
             if not ok then
                 stopLoading("Lỗi!", Color3.fromRGB(255, 100, 100))
+                stopPulse()
                 IsScanning = false
             end
         end)
@@ -168,7 +246,6 @@ local function scanPass(maxPlayers, maxPages)
     local result = {}
     local cursor = ""
     local pages = 0
-    local totalScanned = 0
 
     while pages < maxPages do
         local data = requestPage(cursor)
@@ -176,7 +253,6 @@ local function scanPass(maxPlayers, maxPages)
         local cnt = 0
         for _, s in ipairs(data.data) do
             cnt = cnt + 1
-            totalScanned = totalScanned + 1
             local pc = s.playing or 0
             local id = s.id
             if pc >= 1 and pc <= maxPlayers then
@@ -198,7 +274,7 @@ local function scanPass(maxPlayers, maxPages)
         task.wait(0.02)
     end
 
-    return result, totalScanned
+    return result
 end
 
 local function calculateScore(server, stabilityBonus)
@@ -210,31 +286,28 @@ local function calculateScore(server, stabilityBonus)
     elseif server.playing == 3 then
         playerScore = 10
     end
-
     local fpsScore = math.max(0, 60 - server.fps) * 1.5
-
     local pingScore = math.min(server.ping, 500) / 5
-
     local stabilityScore = stabilityBonus * 60
-
-    local total = playerScore + fpsScore + pingScore + stabilityScore
-    return total
+    return playerScore + fpsScore + pingScore + stabilityScore
 end
 
 function doHop()
     if IsScanning then return end
     IsScanning = true
 
+    startPulse(Color3.fromRGB(255, 200, 100))
     startLoading("Đang dò server")
     task.wait(0.1)
 
     if not http then
         IsScanning = false
         stopLoading("Lỗi kết nối!", Color3.fromRGB(255, 100, 100))
+        stopPulse()
         return
     end
 
-    local pass1 = select(1, scanPass(2, 12))
+    local pass1 = scanPass(2, 12)
 
     local count1 = 0
     for _ in pairs(pass1) do count1 = count1 + 1 end
@@ -242,13 +315,15 @@ function doHop()
     if count1 == 0 then
         IsScanning = false
         stopLoading("Không có server!", Color3.fromRGB(255, 100, 100))
+        stopPulse()
         return
     end
 
     startLoading("Đang phân tích")
+    startPulse(Color3.fromRGB(100, 180, 255))
     task.wait(2.5)
 
-    local pass2 = select(1, scanPass(2, 12))
+    local pass2 = scanPass(2, 12)
 
     local stable = {}
     for id, s in pairs(pass2) do
@@ -269,12 +344,12 @@ function doHop()
     end
 
     startLoading("Đang xác nhận")
+    startPulse(Color3.fromRGB(180, 130, 255))
     task.wait(1.5)
 
     local finalPool = {}
     for _, s in ipairs(stable) do
-        local total = calculateScore(s, s.stability)
-        s.score = total
+        s.score = calculateScore(s, s.stability)
         table.insert(finalPool, s)
     end
 
@@ -298,12 +373,14 @@ function doHop()
     if topCount == 0 then
         IsScanning = false
         stopLoading("Không có server!", Color3.fromRGB(255, 100, 100))
+        stopPulse()
         return
     end
 
     local target = pickFrom[math.random(1, topCount)]
 
     startLoading("Đang vào server")
+    startPulse(Color3.fromRGB(60, 220, 150))
     task.wait(0.5)
 
     IsScanning = false
@@ -315,5 +392,10 @@ function doHop()
 
     if not ok then
         stopLoading("Lỗi! Bấm lại.", Color3.fromRGB(255, 100, 100))
+        stopPulse()
     end
 end
+
+Glow.ImageTransparency = 0.85
+Glow.Size = UDim2.new(0, 120, 0, 120)
+Glow.Position = UDim2.new(0.5, -60, 0, -20)
