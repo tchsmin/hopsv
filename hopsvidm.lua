@@ -19,16 +19,13 @@ local http = getHttp()
 
 local Blacklist = {}
 local IsScanning = false
-local IsDragging = false
-local DragStartTime = 0
-local DragStartPos = nil
-local BtnStartPos = nil
-local MovedDistance = 0
+local LoaderActive = false
+local loaderCoroutine = nil
 
-if CoreGui:FindFirstChild("HopButton") then CoreGui.HopButton:Destroy() end
+if CoreGui:FindFirstChild("HopUI") then CoreGui.HopUI:Destroy() end
 
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "HopButton"
+ScreenGui.Name = "HopUI"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 ScreenGui.IgnoreGuiInset = true
@@ -36,15 +33,14 @@ ScreenGui.DisplayOrder = 999999
 ScreenGui.Parent = CoreGui
 
 local Container = Instance.new("Frame")
-Container.Size = UDim2.new(0, 220, 0, 130)
-Container.Position = UDim2.new(0, 20, 0.5, -65)
+Container.Size = UDim2.new(0, 180, 0, 110)
+Container.Position = UDim2.new(0, 20, 0.5, -55)
 Container.BackgroundTransparency = 1
-Container.Active = false
 Container.Parent = ScreenGui
 
 local Btn = Instance.new("TextButton")
-Btn.Size = UDim2.new(0, 85, 0, 85)
-Btn.Position = UDim2.new(0.5, -42, 0, 0)
+Btn.Size = UDim2.new(0, 80, 0, 80)
+Btn.Position = UDim2.new(0.5, -40, 0, 0)
 Btn.BackgroundColor3 = Color3.fromRGB(60, 180, 120)
 Btn.Text = "HOP"
 Btn.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -58,105 +54,92 @@ local BtnCorner = Instance.new("UICorner")
 BtnCorner.CornerRadius = UDim.new(1, 0)
 BtnCorner.Parent = Btn
 
-local BtnStroke = Instance.new("UIStroke")
-BtnStroke.Color = Color3.fromRGB(255, 255, 255)
-BtnStroke.Thickness = 2
-BtnStroke.Transparency = 0.4
-BtnStroke.Parent = Btn
-
-local CounterLabel = Instance.new("TextLabel")
-CounterLabel.Size = UDim2.new(1, 0, 0, 22)
-CounterLabel.Position = UDim2.new(0, 0, 0, 88)
-CounterLabel.BackgroundColor3 = Color3.fromRGB(20, 22, 30)
-CounterLabel.BackgroundTransparency = 0.15
-CounterLabel.BorderSizePixel = 0
-CounterLabel.Text = "0 / 1000"
-CounterLabel.TextColor3 = Color3.fromRGB(200, 220, 255)
-CounterLabel.Font = Enum.Font.GothamBold
-CounterLabel.TextSize = 12
-CounterLabel.Parent = Container
-
-local CounterCorner = Instance.new("UICorner")
-CounterCorner.CornerRadius = UDim.new(0, 6)
-CounterCorner.Parent = CounterLabel
-
 local StatusLabel = Instance.new("TextLabel")
-StatusLabel.Size = UDim2.new(1, 0, 0, 20)
-StatusLabel.Position = UDim2.new(0, 0, 0, 111)
+StatusLabel.Size = UDim2.new(1, 0, 0, 22)
+StatusLabel.Position = UDim2.new(0, 0, 0, 84)
 StatusLabel.BackgroundColor3 = Color3.fromRGB(20, 22, 30)
-StatusLabel.BackgroundTransparency = 0.2
+StatusLabel.BackgroundTransparency = 0.1
 StatusLabel.BorderSizePixel = 0
-StatusLabel.Text = "San sang"
+StatusLabel.Text = "Sẵn sàng"
 StatusLabel.TextColor3 = Color3.fromRGB(200, 220, 255)
-StatusLabel.Font = Enum.Font.Gotham
-StatusLabel.TextSize = 11
+StatusLabel.Font = Enum.Font.GothamBold
+StatusLabel.TextSize = 12
 StatusLabel.Parent = Container
 
 local StatusCorner = Instance.new("UICorner")
 StatusCorner.CornerRadius = UDim.new(0, 6)
 StatusCorner.Parent = StatusLabel
 
-local function setBtnColor(color)
-    Btn.BackgroundColor3 = color
+local SPINNER = {"|", "/", "-", "\\"}
+
+local function startLoading(text)
+    LoaderActive = false
+    task.wait()
+    LoaderActive = true
+    StatusLabel.TextColor3 = Color3.fromRGB(255, 220, 120)
+    loaderCoroutine = task.spawn(function()
+        local i = 1
+        while LoaderActive do
+            StatusLabel.Text = text .. " " .. SPINNER[i]
+            i = i + 1
+            if i > #SPINNER then i = 1 end
+            task.wait(0.15)
+        end
+    end)
 end
 
-local function resetDragState()
-    IsDragging = false
-    DragStartPos = nil
-    BtnStartPos = nil
-    MovedDistance = 0
+local function stopLoading(finalText, color)
+    LoaderActive = false
+    loaderCoroutine = nil
+    if finalText then
+        StatusLabel.Text = finalText
+        StatusLabel.TextColor3 = color or Color3.fromRGB(200, 220, 255)
+    end
 end
+
+local dragActive = false
+local dragStartInput = nil
+local dragStartPos = nil
+local dragMoved = false
 
 Btn.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1
         or input.UserInputType == Enum.UserInputType.Touch then
-        IsDragging = true
-        DragStartTime = tick()
-        DragStartPos = input.Position
-        BtnStartPos = Container.Position
-        MovedDistance = 0
+        dragActive = true
+        dragMoved = false
+        dragStartInput = input.Position
+        dragStartPos = Container.Position
         Btn.BackgroundColor3 = Color3.fromRGB(40, 140, 90)
     end
 end)
 
 UserInputService.InputChanged:Connect(function(input)
-    if not IsDragging then return end
+    if not dragActive then return end
     if input.UserInputType ~= Enum.UserInputType.MouseMovement
         and input.UserInputType ~= Enum.UserInputType.Touch then return end
-    if not DragStartPos or not BtnStartPos then return end
-
-    local delta = input.Position - DragStartPos
-    local dist = math.sqrt(delta.X * delta.X + delta.Y * delta.Y)
-    if dist > MovedDistance then
-        MovedDistance = dist
+    local delta = input.Position - dragStartInput
+    if math.abs(delta.X) > 8 or math.abs(delta.Y) > 8 then
+        dragMoved = true
     end
-
     Container.Position = UDim2.new(
-        BtnStartPos.X.Scale,
-        BtnStartPos.X.Offset + delta.X,
-        BtnStartPos.Y.Scale,
-        BtnStartPos.Y.Offset + delta.Y
+        dragStartPos.X.Scale,
+        dragStartPos.X.Offset + delta.X,
+        dragStartPos.Y.Scale,
+        dragStartPos.Y.Offset + delta.Y
     )
 end)
 
 UserInputService.InputEnded:Connect(function(input)
-    if not IsDragging then return end
+    if not dragActive then return end
     if input.UserInputType ~= Enum.UserInputType.MouseButton1
         and input.UserInputType ~= Enum.UserInputType.Touch then return end
-
-    local wasClick = MovedDistance < 12
-    local holdTime = tick() - DragStartTime
-
-    resetDragState()
-    setBtnColor(Color3.fromRGB(60, 180, 120))
-
-    if wasClick and holdTime < 2 then
+    dragActive = false
+    Btn.BackgroundColor3 = Color3.fromRGB(60, 180, 120)
+    if not dragMoved then
         task.spawn(function()
-            local ok, err = pcall(scanAndHop)
+            local ok, err = pcall(doHop)
             if not ok then
-                StatusLabel.Text = "Loi: " .. tostring(err)
-                StatusLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
-                IsScanning = false
+                stopLoading("Lỗi!", Color3.fromRGB(255, 100, 100))
             end
         end)
     end
@@ -169,11 +152,7 @@ local function requestPage(cursor)
         PLACE_ID, cursor or ""
     )
     local ok, res = pcall(function()
-        return http({
-            Url = url,
-            Method = "GET",
-            Headers = { ["Accept"] = "application/json" }
-        })
+        return http({ Url = url, Method = "GET", Headers = { ["Accept"] = "application/json" } })
     end)
     if not ok or not res or not res.Body then return nil end
     local ok2, data = pcall(function()
@@ -183,107 +162,82 @@ local function requestPage(cursor)
     return data
 end
 
-function scanAndHop()
+function doHop()
     if IsScanning then return end
     IsScanning = true
-
-    CounterLabel.Text = "0 / 1000"
-    CounterLabel.TextColor3 = Color3.fromRGB(255, 220, 120)
-    StatusLabel.Text = "Bat dau quet..."
-    StatusLabel.TextColor3 = Color3.fromRGB(255, 200, 100)
-
+    startLoading("Đang tìm server")
     task.wait(0.1)
 
     if not http then
-        StatusLabel.Text = "Loi HTTP!"
-        StatusLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
-        CounterLabel.TextColor3 = Color3.fromRGB(200, 220, 255)
         IsScanning = false
+        stopLoading("Lỗi kết nối!", Color3.fromRGB(255, 100, 100))
         return
     end
 
     local onePlayer = {}
-    local totalScanned = 0
+    local twoPlayer = {}
     local cursor = ""
     local pages = 0
-    local maxPages = 10
 
-    while pages < maxPages do
+    while pages < 12 do
         local data = requestPage(cursor)
         if not data or not data.data then break end
-
-        local pageCount = 0
+        local cnt = 0
         for _, s in ipairs(data.data) do
-            pageCount = pageCount + 1
-            totalScanned = totalScanned + 1
-
+            cnt = cnt + 1
             local pc = s.playing or 0
-            if pc == 1 then
-                local id = s.id
-                if id ~= JOB_ID and not Blacklist[id] then
-                    table.insert(onePlayer, {
-                        id = id,
-                        ping = s.ping or 999,
-                        fps = s.fps or 60
-                    })
+            local id = s.id
+            if id ~= JOB_ID and not Blacklist[id] then
+                local entry = {
+                    id = id,
+                    ping = s.ping or 999,
+                    fps = s.fps or 60,
+                    playing = pc
+                }
+                if pc == 1 then
+                    table.insert(onePlayer, entry)
+                elseif pc == 2 then
+                    table.insert(twoPlayer, entry)
                 end
             end
         end
-
-        if pageCount == 0 then break end
-
-        CounterLabel.Text = totalScanned .. " / 1000"
-        StatusLabel.Text = "Da tim: " .. #onePlayer .. " server 1 nguoi"
-
+        if cnt == 0 then break end
         cursor = data.nextPageCursor
         if not cursor or cursor == "" or cursor == "null" then break end
-
         pages = pages + 1
-        task.wait(0.05)
+        task.wait(0.02)
     end
 
-    if totalScanned == 0 then
-        StatusLabel.Text = "Khong lay duoc du lieu!"
-        StatusLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
-        CounterLabel.TextColor3 = Color3.fromRGB(200, 220, 255)
+    local pool = onePlayer
+    if #pool == 0 then pool = twoPlayer end
+
+    if #pool == 0 then
         IsScanning = false
+        stopLoading("Không có server!", Color3.fromRGB(255, 100, 100))
         return
     end
 
-    CounterLabel.Text = totalScanned .. " / 1000"
-    CounterLabel.TextColor3 = Color3.fromRGB(120, 255, 160)
-
-    if #onePlayer == 0 then
-        StatusLabel.Text = "Khong co server 1 nguoi!"
-        StatusLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
-        IsScanning = false
-        return
-    end
-
-    table.sort(onePlayer, function(a, b)
+    table.sort(pool, function(a, b)
         if a.fps ~= b.fps then
             return a.fps < b.fps
         end
         return a.ping > b.ping
     end)
 
-    local target = onePlayer[1]
-    StatusLabel.Text = "Vao FPS" .. target.fps .. " | Ping" .. target.ping
-    StatusLabel.TextColor3 = Color3.fromRGB(120, 255, 160)
+    local topN = math.min(5, #pool)
+    local target = pool[math.random(1, topN)]
 
-    task.wait(0.3)
+    startLoading("Đang vào server")
+    task.wait(0.5)
 
     IsScanning = false
+    Blacklist[target.id] = true
 
     local ok = pcall(function()
         TeleportService:TeleportToPlaceInstance(PLACE_ID, target.id, LocalPlayer)
     end)
 
     if not ok then
-        Blacklist[target.id] = true
-        StatusLabel.Text = "Loi teleport! Bam lai."
-        StatusLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
-    else
-        Blacklist[target.id] = true
+        stopLoading("Lỗi! Bấm lại.", Color3.fromRGB(255, 100, 100))
     end
 end
