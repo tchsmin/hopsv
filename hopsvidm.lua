@@ -33,7 +33,7 @@ ScreenGui.DisplayOrder = 999999
 ScreenGui.Parent = CoreGui
 
 local Container = Instance.new("Frame")
-Container.Size = UDim2.new(0, 180, 0, 110)
+Container.Size = UDim2.new(0, 200, 0, 110)
 Container.Position = UDim2.new(0, 20, 0.5, -55)
 Container.BackgroundTransparency = 1
 Container.Parent = ScreenGui
@@ -63,7 +63,8 @@ StatusLabel.BorderSizePixel = 0
 StatusLabel.Text = "Sẵn sàng"
 StatusLabel.TextColor3 = Color3.fromRGB(200, 220, 255)
 StatusLabel.Font = Enum.Font.GothamBold
-StatusLabel.TextSize = 12
+StatusLabel.TextSize = 11
+StatusLabel.TextWrapped = false
 StatusLabel.Parent = Container
 
 local StatusCorner = Instance.new("UICorner")
@@ -137,9 +138,10 @@ UserInputService.InputEnded:Connect(function(input)
     Btn.BackgroundColor3 = Color3.fromRGB(60, 180, 120)
     if not dragMoved then
         task.spawn(function()
-            local ok, err = pcall(doHop)
+            local ok = pcall(doHop)
             if not ok then
                 stopLoading("Lỗi!", Color3.fromRGB(255, 100, 100))
+                IsScanning = false
             end
         end)
     end
@@ -162,42 +164,30 @@ local function requestPage(cursor)
     return data
 end
 
-function doHop()
-    if IsScanning then return end
-    IsScanning = true
-    startLoading("Đang tìm server")
-    task.wait(0.1)
-
-    if not http then
-        IsScanning = false
-        stopLoading("Lỗi kết nối!", Color3.fromRGB(255, 100, 100))
-        return
-    end
-
-    local onePlayer = {}
-    local twoPlayer = {}
+local function scanPass(maxPlayers, maxPages)
+    local result = {}
     local cursor = ""
     local pages = 0
+    local totalScanned = 0
 
-    while pages < 12 do
+    while pages < maxPages do
         local data = requestPage(cursor)
         if not data or not data.data then break end
         local cnt = 0
         for _, s in ipairs(data.data) do
             cnt = cnt + 1
+            totalScanned = totalScanned + 1
             local pc = s.playing or 0
             local id = s.id
-            if id ~= JOB_ID and not Blacklist[id] then
-                local entry = {
-                    id = id,
-                    ping = s.ping or 999,
-                    fps = s.fps or 60,
-                    playing = pc
-                }
-                if pc == 1 then
-                    table.insert(onePlayer, entry)
-                elseif pc == 2 then
-                    table.insert(twoPlayer, entry)
+            if pc >= 1 and pc <= maxPlayers then
+                if id ~= JOB_ID and not Blacklist[id] then
+                    result[id] = {
+                        id = id,
+                        ping = s.ping or 999,
+                        fps = s.fps or 60,
+                        playing = pc,
+                        max = s.maxPlayers or 12
+                    }
                 end
             end
         end
@@ -208,24 +198,110 @@ function doHop()
         task.wait(0.02)
     end
 
-    local pool = onePlayer
-    if #pool == 0 then pool = twoPlayer end
+    return result, totalScanned
+end
 
-    if #pool == 0 then
+local function calculateScore(server, stabilityBonus)
+    local playerScore = 0
+    if server.playing == 1 then
+        playerScore = 100
+    elseif server.playing == 2 then
+        playerScore = 40
+    elseif server.playing == 3 then
+        playerScore = 10
+    end
+
+    local fpsScore = math.max(0, 60 - server.fps) * 1.5
+
+    local pingScore = math.min(server.ping, 500) / 5
+
+    local stabilityScore = stabilityBonus * 60
+
+    local total = playerScore + fpsScore + pingScore + stabilityScore
+    return total
+end
+
+function doHop()
+    if IsScanning then return end
+    IsScanning = true
+
+    startLoading("Đang dò server")
+    task.wait(0.1)
+
+    if not http then
+        IsScanning = false
+        stopLoading("Lỗi kết nối!", Color3.fromRGB(255, 100, 100))
+        return
+    end
+
+    local pass1 = select(1, scanPass(2, 12))
+
+    local count1 = 0
+    for _ in pairs(pass1) do count1 = count1 + 1 end
+
+    if count1 == 0 then
         IsScanning = false
         stopLoading("Không có server!", Color3.fromRGB(255, 100, 100))
         return
     end
 
-    table.sort(pool, function(a, b)
-        if a.fps ~= b.fps then
-            return a.fps < b.fps
+    startLoading("Đang phân tích")
+    task.wait(2.5)
+
+    local pass2 = select(1, scanPass(2, 12))
+
+    local stable = {}
+    for id, s in pairs(pass2) do
+        if pass1[id] then
+            s.stability = 2
+            if s.playing == pass1[id].playing then
+                s.stability = 3
+            end
+            table.insert(stable, s)
         end
-        return a.ping > b.ping
+    end
+
+    if #stable == 0 then
+        for id, s in pairs(pass1) do
+            s.stability = 1
+            table.insert(stable, s)
+        end
+    end
+
+    startLoading("Đang xác nhận")
+    task.wait(1.5)
+
+    local finalPool = {}
+    for _, s in ipairs(stable) do
+        local total = calculateScore(s, s.stability)
+        s.score = total
+        table.insert(finalPool, s)
+    end
+
+    table.sort(finalPool, function(a, b)
+        return a.score > b.score
     end)
 
-    local topN = math.min(5, #pool)
-    local target = pool[math.random(1, topN)]
+    local onePlayer = {}
+    for _, s in ipairs(finalPool) do
+        if s.playing == 1 then
+            table.insert(onePlayer, s)
+        end
+    end
+
+    local pickFrom = onePlayer
+    if #pickFrom == 0 then
+        pickFrom = finalPool
+    end
+
+    local topCount = math.min(3, #pickFrom)
+    if topCount == 0 then
+        IsScanning = false
+        stopLoading("Không có server!", Color3.fromRGB(255, 100, 100))
+        return
+    end
+
+    local target = pickFrom[math.random(1, topCount)]
 
     startLoading("Đang vào server")
     task.wait(0.5)
