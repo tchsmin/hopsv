@@ -8,6 +8,14 @@ local TweenService = game:GetService("TweenService")
 local StarterGui = game:GetService("StarterGui")
 
 local LocalPlayer = Players.LocalPlayer
+if not LocalPlayer then
+    LocalPlayer = Players:GetPropertyChangedSignal("LocalPlayer"):Wait()
+    LocalPlayer = Players.LocalPlayer
+end
+
+repeat task.wait() until game:IsLoaded()
+task.wait(1)
+
 local PLACE_ID = game.PlaceId
 local JOB_ID = game.JobId
 
@@ -51,25 +59,42 @@ local RUNTIME = {
     }
 }
 
-local function acquireHttp()
-    local pool = {
-        rawget(getfenv(), "http_request"),
-        rawget(getfenv(), "request"),
-        syn and syn.request,
-        fluxus and fluxus.request,
-        http and http.request,
-        krypt and krypt.request,
-        codex and codex.request
-    }
-    for _, fn in ipairs(pool) do
-        if type(fn) == "function" then
-            return fn
-        end
+local HTTP
+local httpCandidates = {
+    function() return request end,
+    function() return http_request end,
+    function() return syn and syn.request end,
+    function() return fluxus and fluxus.request end
+}
+
+for _, getter in ipairs(httpCandidates) do
+    local ok, fn = pcall(getter)
+    if ok and type(fn) == "function" then
+        HTTP = fn
+        break
     end
-    return nil
 end
 
-local HTTP = acquireHttp()
+if not HTTP then
+    warn("[HOP] Không tìm thấy HTTP function!")
+end
+
+local function getSafeParent()
+    local ok, result = pcall(function()
+        if CoreGui and CoreGui:FindFirstChild("RobloxGui") then
+            return CoreGui
+        end
+        if gethui then
+            return gethui()
+        end
+        if CoreGui then
+            return CoreGui
+        end
+        return LocalPlayer:WaitForChild("PlayerGui", 5)
+    end)
+    if ok and result then return result end
+    return LocalPlayer:WaitForChild("PlayerGui")
+end
 
 local function randRange(a, b)
     return a + math.random() * (b - a)
@@ -122,20 +147,23 @@ local function setCache(id, data)
     RUNTIME.cache[id] = data
 end
 
-local function notify(title, text)
+local function notify(title, text2)
     if not CONFIG.NOTIFY then return end
     pcall(function()
         StarterGui:SetCore("SendNotification", {
             Title = title,
-            Text = text,
+            Text = text2,
             Duration = 3
         })
     end)
 end
 
-if CoreGui:FindFirstChild("HopUI") then
-    CoreGui.HopUI:Destroy()
+local existingGui = CoreGui:FindFirstChild("HopUI") or LocalPlayer:FindFirstChild("PlayerGui") and LocalPlayer.PlayerGui:FindFirstChild("HopUI")
+if existingGui then
+    pcall(function() existingGui:Destroy() end)
 end
+
+local parent = getSafeParent()
 
 local gui = Instance.new("ScreenGui")
 gui.Name = "HopUI"
@@ -143,7 +171,9 @@ gui.ResetOnSpawn = false
 gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.IgnoreGuiInset = true
 gui.DisplayOrder = 999999
-gui.Parent = CoreGui
+gui.Parent = parent
+
+getgenv().HopUIRef = gui
 
 local root = Instance.new("Frame")
 root.Name = "Root"
@@ -166,7 +196,7 @@ halo.Parent = root
 local outerRing = Instance.new("Frame")
 outerRing.Name = "OuterRing"
 outerRing.Size = UDim2.new(0, 96, 0, 96)
-outerRing.Position = UDim2.new(0.5, -48, 0, -8)
+outerRing.Position = UDim2.new(0.5, -48, 0, -10)
 outerRing.BackgroundTransparency = 1
 outerRing.ZIndex = 1
 outerRing.Parent = root
@@ -193,7 +223,7 @@ outerRingGradient.Parent = outerRingStroke
 local mainBtn = Instance.new("TextButton")
 mainBtn.Name = "MainBtn"
 mainBtn.Size = UDim2.new(0, 84, 0, 84)
-mainBtn.Position = UDim2.new(0.5, -42, 0, -2)
+mainBtn.Position = UDim2.new(0.5, -42, 0, -4)
 mainBtn.BackgroundColor3 = Color3.fromRGB(45, 180, 130)
 mainBtn.Text = ""
 mainBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -230,20 +260,6 @@ mainStrokeGradient.Color = ColorSequence.new({
 })
 mainStrokeGradient.Rotation = 135
 mainStrokeGradient.Parent = mainStroke
-
-local innerGlow = Instance.new("Frame")
-innerGlow.Name = "InnerGlow"
-innerGlow.Size = UDim2.new(1, -8, 1, -8)
-innerGlow.Position = UDim2.new(0, 4, 0, 4)
-innerGlow.BackgroundColor3 = Color3.fromRGB(150, 255, 200)
-innerGlow.BackgroundTransparency = 1
-innerGlow.BorderSizePixel = 0
-innerGlow.ZIndex = 3
-innerGlow.Parent = mainBtn
-
-local innerGlowCorner = Instance.new("UICorner")
-innerGlowCorner.CornerRadius = UDim.new(1, 0)
-innerGlowCorner.Parent = innerGlow
 
 local topHighlight = Instance.new("Frame")
 topHighlight.Name = "TopHighlight"
@@ -297,45 +313,24 @@ dotsContainer.BackgroundTransparency = 1
 dotsContainer.ZIndex = 5
 dotsContainer.Parent = mainBtn
 
-local dot1 = Instance.new("Frame")
-dot1.Size = UDim2.new(0, 5, 0, 5)
-dot1.Position = UDim2.new(0, 0, 0.5, -2.5)
-dot1.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-dot1.BackgroundTransparency = 0.3
-dot1.BorderSizePixel = 0
-dot1.ZIndex = 5
-dot1.Parent = dotsContainer
+local function makeDot(xPos)
+    local d = Instance.new("Frame")
+    d.Size = UDim2.new(0, 5, 0, 5)
+    d.Position = UDim2.new(0, xPos, 0.5, -2.5)
+    d.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    d.BackgroundTransparency = 0.3
+    d.BorderSizePixel = 0
+    d.ZIndex = 5
+    d.Parent = dotsContainer
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(1, 0)
+    c.Parent = d
+    return d
+end
 
-local dot1Corner = Instance.new("UICorner")
-dot1Corner.CornerRadius = UDim.new(1, 0)
-dot1Corner.Parent = dot1
-
-local dot2 = Instance.new("Frame")
-dot2.Size = UDim2.new(0, 5, 0, 5)
-dot2.Position = UDim2.new(0.5, -2.5, 0.5, -2.5)
-dot2.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-dot2.BackgroundTransparency = 0.3
-dot2.BorderSizePixel = 0
-dot2.ZIndex = 5
-dot2.Parent = dotsContainer
-
-local dot2Corner = Instance.new("UICorner")
-dot2Corner.CornerRadius = UDim.new(1, 0)
-dot2Corner.Parent = dot2
-
-local dot3 = Instance.new("Frame")
-dot3.Size = UDim2.new(0, 5, 0, 5)
-dot3.Position = UDim2.new(1, -5, 0.5, -2.5)
-dot3.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-dot3.BackgroundTransparency = 0.3
-dot3.BorderSizePixel = 0
-dot3.ZIndex = 5
-dot3.Parent = dotsContainer
-
-local dot3Corner = Instance.new("UICorner")
-dot3Corner.CornerRadius = UDim.new(1, 0)
-dot3Corner.Parent = dot3
-
+local dot1 = makeDot(0)
+local dot2 = makeDot(15)
+local dot3 = makeDot(30)
 local allDots = {dot1, dot2, dot3}
 
 local bar = Instance.new("Frame")
@@ -370,19 +365,19 @@ icon.TextSize = 14
 icon.ZIndex = 3
 icon.Parent = bar
 
-local text = Instance.new("TextLabel")
-text.Name = "Text"
-text.Size = UDim2.new(1, -70, 1, 0)
-text.Position = UDim2.new(0, 32, 0, 0)
-text.BackgroundTransparency = 1
-text.Text = "Sẵn sàng"
-text.TextColor3 = Color3.fromRGB(200, 220, 255)
-text.Font = Enum.Font.GothamBold
-text.TextSize = 11
-text.TextXAlignment = Enum.TextXAlignment.Left
-text.TextTruncate = Enum.TextTruncate.AtEnd
-text.ZIndex = 3
-text.Parent = bar
+local statusText = Instance.new("TextLabel")
+statusText.Name = "Text"
+statusText.Size = UDim2.new(1, -70, 1, 0)
+statusText.Position = UDim2.new(0, 32, 0, 0)
+statusText.BackgroundTransparency = 1
+statusText.Text = "Sẵn sàng"
+statusText.TextColor3 = Color3.fromRGB(200, 220, 255)
+statusText.Font = Enum.Font.GothamBold
+statusText.TextSize = 11
+statusText.TextXAlignment = Enum.TextXAlignment.Left
+statusText.TextTruncate = Enum.TextTruncate.AtEnd
+statusText.ZIndex = 3
+statusText.Parent = bar
 
 local progressBg = Instance.new("Frame")
 progressBg.Name = "ProgressBg"
@@ -416,17 +411,17 @@ progressGradient.Color = ColorSequence.new({
 })
 progressGradient.Parent = progressFill
 
-local stats = Instance.new("TextLabel")
-stats.Name = "Stats"
-stats.Size = UDim2.new(1, 0, 0, 14)
-stats.Position = UDim2.new(0, 0, 1, 6)
-stats.BackgroundTransparency = 1
-stats.Text = "Sẵn sàng hoạt động"
-stats.TextColor3 = Color3.fromRGB(130, 150, 180)
-stats.Font = Enum.Font.Gotham
-stats.TextSize = 9
-stats.ZIndex = 2
-stats.Parent = root
+local statsLabel = Instance.new("TextLabel")
+statsLabel.Name = "Stats"
+statsLabel.Size = UDim2.new(1, 0, 0, 14)
+statsLabel.Position = UDim2.new(0, 0, 1, 6)
+statsLabel.BackgroundTransparency = 1
+statsLabel.Text = "Sẵn sàng hoạt động"
+statsLabel.TextColor3 = Color3.fromRGB(130, 150, 180)
+statsLabel.Font = Enum.Font.Gotham
+statsLabel.TextSize = 9
+statsLabel.ZIndex = 2
+statsLabel.Parent = root
 
 local SPINNERS = {
     dots = {"", ".", "..", "...", "...."},
@@ -434,8 +429,7 @@ local SPINNERS = {
     arrow = {"←", "↖", "↑", "↗", "→", "↘", "↓", "↙"},
     block = {"▁", "▂", "▃", "▄", "▅", "▆", "▇", "█", "▇", "▆", "▅", "▄", "▃", "▂"},
     pulse = {"◐", "◓", "◑", "◒"},
-    target = {"◜", "◝", "◞", "◟"},
-    dots2 = {"⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"}
+    target = {"◜", "◝", "◞", "◟"}
 }
 
 local activeSpinner = SPINNERS.dots
@@ -443,7 +437,7 @@ local activeBaseText = ""
 
 local function setDotsBlink(speed)
     if RUNTIME.dotBlinkThread then
-        task.cancel(RUNTIME.dotBlinkThread)
+        pcall(function() task.cancel(RUNTIME.dotBlinkThread) end)
         RUNTIME.dotBlinkThread = nil
     end
     for _, d in ipairs(allDots) do
@@ -455,17 +449,12 @@ local function setDotsBlink(speed)
     RUNTIME.dotBlinkThread = task.spawn(function()
         local i = 1
         while true do
-            if not speed or not mainBtn or not mainBtn.Parent then break end
+            if not mainBtn or not mainBtn.Parent then break end
             for j, d in ipairs(allDots) do
-                if j == i then
-                    TweenService:Create(d, TweenInfo.new(0.15), {
-                        BackgroundTransparency = 0
-                    }):Play()
-                else
-                    TweenService:Create(d, TweenInfo.new(0.15), {
-                        BackgroundTransparency = 0.7
-                    }):Play()
-                end
+                if not d or not d.Parent then return end
+                TweenService:Create(d, TweenInfo.new(0.15), {
+                    BackgroundTransparency = (j == i) and 0 or 0.7
+                }):Play()
             end
             i = i + 1
             if i > #allDots then i = 1 end
@@ -485,7 +474,7 @@ local function startRingRotation(color)
 
     local startTime = tick()
     RUNTIME.rotateConn = RunService.Heartbeat:Connect(function()
-        if not outerRingStroke or not outerRingStroke.Parent then return end
+        if not outerRingGradient or not outerRingGradient.Parent then return end
         local t = (tick() - startTime) * 180
         outerRingGradient.Rotation = (t % 360)
     end)
@@ -538,32 +527,26 @@ end
 local function pressDown()
     TweenService:Create(mainBtn, TweenInfo.new(0.08, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
         Size = UDim2.new(0, 76, 0, 76),
-        Position = UDim2.new(0.5, -38, 0, 2)
+        Position = UDim2.new(0.5, -38, 0, 0)
     }):Play()
     TweenService:Create(topHighlight, TweenInfo.new(0.08), {
         BackgroundTransparency = 0.85
-    }):Play()
-    TweenService:Create(innerGlow, TweenInfo.new(0.08), {
-        BackgroundTransparency = 0.88
     }):Play()
 end
 
 local function pressUp()
     TweenService:Create(mainBtn, TweenInfo.new(0.14, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
         Size = UDim2.new(0, 84, 0, 84),
-        Position = UDim2.new(0.5, -42, 0, -2)
+        Position = UDim2.new(0.5, -42, 0, -4)
     }):Play()
     TweenService:Create(topHighlight, TweenInfo.new(0.14), {
         BackgroundTransparency = 0.62
-    }):Play()
-    TweenService:Create(innerGlow, TweenInfo.new(0.14), {
-        BackgroundTransparency = 1
     }):Play()
 end
 
 local function refreshStats()
     local elapsed = tick() - RUNTIME.stats.sessionStart
-    stats.Text = string.format("Scan %d • Hops %d • Found %d • %ds",
+    statsLabel.Text = string.format("Scan %d • Hops %d • Found %d • %ds",
         RUNTIME.stats.scans,
         RUNTIME.stats.hops,
         RUNTIME.stats.candidates,
@@ -579,7 +562,7 @@ local function startLoading(label, spinnerKey, iconChar, color)
     activeSpinner = SPINNERS[spinnerKey] or SPINNERS.dots
 
     local c = color or Color3.fromRGB(120, 200, 255)
-    text.TextColor3 = c
+    statusText.TextColor3 = c
     icon.Text = iconChar or "●"
     icon.TextColor3 = c
     progressFill.BackgroundColor3 = c
@@ -592,9 +575,9 @@ local function startLoading(label, spinnerKey, iconChar, color)
 
             if activeSpinner == SPINNERS.dots then
                 local dots = math.floor(elapsed * 3) % 5
-                text.Text = activeBaseText .. string.rep(".", dots)
+                statusText.Text = activeBaseText .. string.rep(".", dots)
             else
-                text.Text = activeBaseText .. " " .. activeSpinner[i]
+                statusText.Text = activeBaseText .. " " .. activeSpinner[i]
                 i = i + 1
                 if i > #activeSpinner then i = 1 end
             end
@@ -623,8 +606,8 @@ local function stopLoading(finalText, color)
     RUNTIME.loaderActive = false
     RUNTIME.loaderThread = nil
     if finalText then
-        text.Text = finalText
-        text.TextColor3 = color or Color3.fromRGB(200, 220, 255)
+        statusText.Text = finalText
+        statusText.TextColor3 = color or Color3.fromRGB(200, 220, 255)
         icon.TextColor3 = color or Color3.fromRGB(120, 200, 255)
         progressFill.BackgroundColor3 = color or Color3.fromRGB(120, 200, 255)
     end
@@ -641,27 +624,48 @@ local drag = {
     moved = false
 }
 
-mainBtn.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1
-        or input.UserInputType == Enum.UserInputType.Touch then
-        drag.active = true
-        drag.moved = false
-        drag.startInput = input.Position
-        drag.startPos = root.Position
-        pressDown()
-    end
-end)
+local function fetchPage(cursor)
+    if not HTTP then return nil end
+    local url = string.format(
+        "https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=%d&cursor=%s",
+        PLACE_ID, CONFIG.PAGE_SIZE, cursor or ""
+    )
+    local ok, res = callSafe(function()
+        return HTTP({
+            Url = url,
+            Method = "GET",
+            Headers = {
+                ["Accept"] = "application/json",
+                ["User-Agent"] = "Roblox/WinInet"
+            }
+        })
+    end)
+    if not ok or not res or not res.Body then return nil end
+    local ok2, data = callSafe(function()
+        return HttpService:JSONDecode(res.Body)
+    end)
+    if not ok2 or not data then return nil end
+    return data
+end
 
-UserInputService.InputChanged:Connect(function(input)
-    if not drag.active then return end
-    if input.UserInputType ~= Enum.UserInputType.MouseMovement
-        and input.UserInputType ~= Enum.UserInputType.Touch then return end
-    local delta = input.Position - drag.startInput
-    if math.abs(delta.X) > 8 or math.abs(delta.Y) > 8 then
-        drag.moved = true
-    end
-    root.Position = UDim2.new(
-        drag.startPos.X.Scale,
-        drag.startPos.X.Offset + delta.X,
-        drag.startPos.Y.Scale,
-        drag.star
+local function streamServers(onPage)
+    local cursor = ""
+    local scanned = 0
+    local pages = 0
+    local maxPages = math.ceil(CONFIG.SCAN_LIMIT / CONFIG.PAGE_SIZE)
+
+    while pages < maxPages and scanned < CONFIG.SCAN_LIMIT do
+        local data = fetchPage(cursor)
+        if not data or not data.data then break end
+
+        local pageList = {}
+        local pageCount = 0
+
+        for _, s in ipairs(data.data) do
+            pageCount = pageCount + 1
+            scanned = scanned + 1
+
+            local id = s.id
+            local pc = s.playing or 0
+            local ping = s.ping or 999
+            local fps =
