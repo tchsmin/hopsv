@@ -37,18 +37,18 @@ ScreenGui.DisplayOrder = 999999
 ScreenGui.Parent = CoreGui
 
 local Container = Instance.new("Frame")
-Container.Size = UDim2.new(0, 200, 0, 115)
-Container.Position = UDim2.new(0, 20, 0.5, -57)
+Container.Size = UDim2.new(0, 220, 0, 125)
+Container.Position = UDim2.new(0, 20, 0, 80)
 Container.BackgroundTransparency = 1
 Container.Parent = ScreenGui
 
 local Glow = Instance.new("ImageLabel")
-Glow.Size = UDim2.new(0, 130, 0, 130)
-Glow.Position = UDim2.new(0.5, -65, 0, -25)
+Glow.Size = UDim2.new(0, 120, 0, 120)
+Glow.Position = UDim2.new(0.5, -60, 0, -20)
 Glow.BackgroundTransparency = 1
 Glow.Image = "rbxassetid://5028857084"
 Glow.ImageColor3 = Color3.fromRGB(60, 180, 120)
-Glow.ImageTransparency = 0.5
+Glow.ImageTransparency = 0.85
 Glow.ZIndex = 0
 Glow.Parent = Container
 
@@ -83,24 +83,86 @@ BtnStroke.Thickness = 1.5
 BtnStroke.Transparency = 0.5
 BtnStroke.Parent = Btn
 
+local StatusBar = Instance.new("Frame")
+StatusBar.Size = UDim2.new(1, 0, 0, 30)
+StatusBar.Position = UDim2.new(0, 0, 0, 88)
+StatusBar.BackgroundColor3 = Color3.fromRGB(18, 20, 28)
+StatusBar.BackgroundTransparency = 0.05
+StatusBar.BorderSizePixel = 0
+StatusBar.ZIndex = 2
+StatusBar.Parent = Container
+
+local StatusBarCorner = Instance.new("UICorner")
+StatusBarCorner.CornerRadius = UDim.new(0, 8)
+StatusBarCorner.Parent = StatusBar
+
+local StatusStroke = Instance.new("UIStroke")
+StatusStroke.Color = Color3.fromRGB(80, 120, 180)
+StatusStroke.Thickness = 1
+StatusStroke.Transparency = 0.6
+StatusStroke.Parent = StatusBar
+
+local StatusIcon = Instance.new("TextLabel")
+StatusIcon.Size = UDim2.new(0, 28, 1, 0)
+StatusIcon.Position = UDim2.new(0, 4, 0, 0)
+StatusIcon.BackgroundTransparency = 1
+StatusIcon.Text = "●"
+StatusIcon.TextColor3 = Color3.fromRGB(120, 200, 255)
+StatusIcon.Font = Enum.Font.GothamBold
+StatusIcon.TextSize = 14
+StatusIcon.ZIndex = 3
+StatusIcon.Parent = StatusBar
+
 local StatusLabel = Instance.new("TextLabel")
-StatusLabel.Size = UDim2.new(1, 0, 0, 22)
-StatusLabel.Position = UDim2.new(0, 0, 0, 88)
-StatusLabel.BackgroundColor3 = Color3.fromRGB(20, 22, 30)
-StatusLabel.BackgroundTransparency = 0.1
-StatusLabel.BorderSizePixel = 0
+StatusLabel.Size = UDim2.new(1, -70, 1, 0)
+StatusLabel.Position = UDim2.new(0, 32, 0, 0)
+StatusLabel.BackgroundTransparency = 1
 StatusLabel.Text = "Sẵn sàng"
 StatusLabel.TextColor3 = Color3.fromRGB(200, 220, 255)
 StatusLabel.Font = Enum.Font.GothamBold
 StatusLabel.TextSize = 11
-StatusLabel.ZIndex = 2
-StatusLabel.Parent = Container
+StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+StatusLabel.TextTruncate = Enum.TextTruncate.AtEnd
+StatusLabel.ZIndex = 3
+StatusLabel.Parent = StatusBar
 
-local StatusCorner = Instance.new("UICorner")
-StatusCorner.CornerRadius = UDim.new(0, 6)
-StatusCorner.Parent = StatusLabel
+local ProgressBar = Instance.new("Frame")
+ProgressBar.Size = UDim2.new(1, -8, 0, 3)
+ProgressBar.Position = UDim2.new(0, 4, 1, -5)
+ProgressBar.BackgroundColor3 = Color3.fromRGB(40, 50, 70)
+ProgressBar.BorderSizePixel = 0
+ProgressBar.ZIndex = 4
+ProgressBar.Parent = StatusBar
 
-local SPINNER = {"|", "/", "-", "\\"}
+local ProgressCorner = Instance.new("UICorner")
+ProgressCorner.CornerRadius = UDim.new(1, 0)
+ProgressCorner.Parent = ProgressBar
+
+local ProgressFill = Instance.new("Frame")
+ProgressFill.Size = UDim2.new(0, 0, 1, 0)
+ProgressFill.BackgroundColor3 = Color3.fromRGB(120, 200, 255)
+ProgressFill.BorderSizePixel = 0
+ProgressFill.ZIndex = 5
+ProgressFill.Parent = ProgressBar
+
+local ProgressFillCorner = Instance.new("UICorner")
+ProgressFillCorner.CornerRadius = UDim.new(1, 0)
+ProgressFillCorner.Parent = ProgressFill
+
+local ProgressGradient = Instance.new("UIGradient")
+ProgressGradient.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(100, 180, 255)),
+    ColorSequenceKeypoint.new(1, Color3.fromRGB(180, 120, 255))
+})
+ProgressGradient.Parent = ProgressFill
+
+local SPINNER_DOTS = {"", ".", "..", "...", "...."}
+local SPINNER_BRAILLE = {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+local SPINNER_ARROW = {"←", "↖", "↑", "↗", "→", "↘", "↓", "↙"}
+local SPINNER_BLOCK = {"▁", "▂", "▃", "▄", "▅", "▆", "▇", "█", "▇", "▆", "▅", "▄", "▃", "▂"}
+
+local currentSpinner = SPINNER_DOTS
+local currentBaseText = ""
 
 local function startPulse(color)
     PulseActive = false
@@ -118,8 +180,9 @@ local function startPulse(color)
         local t = (tick() - startTime) * 2
         local wave = (math.sin(t) + 1) / 2
         Glow.ImageTransparency = 0.7 - (wave * 0.35)
-        Glow.Size = UDim2.new(0, 120 + wave * 25, 0, 120 + wave * 25)
-        Glow.Position = UDim2.new(0.5, -(120 + wave * 25) / 2, 0, -22 - (wave * 25) / 2)
+        local size = 120 + wave * 25
+        Glow.Size = UDim2.new(0, size, 0, size)
+        Glow.Position = UDim2.new(0.5, -size / 2, 0, -20 - (size - 120) / 2)
     end)
 end
 
@@ -150,18 +213,54 @@ local function pressUp()
     }):Play()
 end
 
-local function startLoading(text)
+local function startLoading(text, spinnerType, icon, color)
     LoaderActive = false
     task.wait()
     LoaderActive = true
-    StatusLabel.TextColor3 = Color3.fromRGB(255, 220, 120)
+
+    currentBaseText = text
+
+    if spinnerType == "braille" then
+        currentSpinner = SPINNER_BRAILLE
+    elseif spinnerType == "arrow" then
+        currentSpinner = SPINNER_ARROW
+    elseif spinnerType == "block" then
+        currentSpinner = SPINNER_BLOCK
+    else
+        currentSpinner = SPINNER_DOTS
+    end
+
+    local c = color or Color3.fromRGB(120, 200, 255)
+    StatusLabel.TextColor3 = c
+    StatusIcon.Text = icon or "●"
+    StatusIcon.TextColor3 = c
+    ProgressFill.BackgroundColor3 = c
+
     loaderCoroutine = task.spawn(function()
         local i = 1
+        local startTime = tick()
         while LoaderActive do
-            StatusLabel.Text = text .. " " .. SPINNER[i]
-            i = i + 1
-            if i > #SPINNER then i = 1 end
-            task.wait(0.13)
+            local elapsed = tick() - startTime
+
+            if currentSpinner == SPINNER_DOTS then
+                local dotCount = math.floor(elapsed * 3) % 5
+                StatusLabel.Text = currentBaseText .. string.rep(".", dotCount)
+            else
+                StatusLabel.Text = currentBaseText .. " " .. currentSpinner[i]
+                i = i + 1
+                if i > #currentSpinner then i = 1 end
+            end
+
+            if currentSpinner == SPINNER_BLOCK then
+                ProgressFill.Size = UDim2.new(
+                    (math.sin(elapsed * 3) + 1) / 2 * 0.9 + 0.1, 0, 1, 0
+                )
+            else
+                local progress = (elapsed % 2) / 2
+                ProgressFill.Size = UDim2.new(progress, 0, 1, 0)
+            end
+
+            task.wait(0.05)
         end
     end)
 end
@@ -172,7 +271,12 @@ local function stopLoading(finalText, color)
     if finalText then
         StatusLabel.Text = finalText
         StatusLabel.TextColor3 = color or Color3.fromRGB(200, 220, 255)
+        StatusIcon.TextColor3 = color or Color3.fromRGB(120, 200, 255)
+        ProgressFill.BackgroundColor3 = color or Color3.fromRGB(120, 200, 255)
     end
+    TweenService:Create(ProgressFill, TweenInfo.new(0.3), {
+        Size = UDim2.new(0, 0, 1, 0)
+    }):Play()
 end
 
 local dragActive = false
@@ -255,12 +359,15 @@ local function scanPass(maxPlayers, maxPages)
             cnt = cnt + 1
             local pc = s.playing or 0
             local id = s.id
+            local ping = s.ping or 999
+            local fps = s.fps or 60
+
             if pc >= 1 and pc <= maxPlayers then
                 if id ~= JOB_ID and not Blacklist[id] then
                     result[id] = {
                         id = id,
-                        ping = s.ping or 999,
-                        fps = s.fps or 60,
+                        ping = ping,
+                        fps = fps,
                         playing = pc,
                         max = s.maxPlayers or 12
                     }
@@ -280,15 +387,41 @@ end
 local function calculateScore(server, stabilityBonus)
     local playerScore = 0
     if server.playing == 1 then
-        playerScore = 100
+        playerScore = 120
     elseif server.playing == 2 then
-        playerScore = 40
-    elseif server.playing == 3 then
-        playerScore = 10
+        playerScore = 30
     end
-    local fpsScore = math.max(0, 60 - server.fps) * 1.5
-    local pingScore = math.min(server.ping, 500) / 5
-    local stabilityScore = stabilityBonus * 60
+
+    local fpsScore = 0
+    if server.fps <= 15 then
+        fpsScore = 60
+    elseif server.fps <= 25 then
+        fpsScore = 50
+    elseif server.fps <= 35 then
+        fpsScore = 30
+    elseif server.fps <= 45 then
+        fpsScore = 10
+    else
+        fpsScore = 0
+    end
+
+    local pingScore = 0
+    if server.ping >= 400 and server.ping <= 550 then
+        pingScore = 50
+    elseif server.ping >= 300 and server.ping < 400 then
+        pingScore = 40
+    elseif server.ping >= 550 and server.ping <= 650 then
+        pingScore = 25
+    elseif server.ping >= 200 and server.ping < 300 then
+        pingScore = 20
+    elseif server.ping > 650 then
+        pingScore = 0
+    else
+        pingScore = 10
+    end
+
+    local stabilityScore = stabilityBonus * 50
+
     return playerScore + fpsScore + pingScore + stabilityScore
 end
 
@@ -297,7 +430,7 @@ function doHop()
     IsScanning = true
 
     startPulse(Color3.fromRGB(255, 200, 100))
-    startLoading("Đang dò server")
+    startLoading("Đang dò server", "dots", "◉", Color3.fromRGB(255, 200, 100))
     task.wait(0.1)
 
     if not http then
@@ -319,7 +452,7 @@ function doHop()
         return
     end
 
-    startLoading("Đang phân tích")
+    startLoading("Đang phân tích", "braille", "◆", Color3.fromRGB(100, 180, 255))
     startPulse(Color3.fromRGB(100, 180, 255))
     task.wait(2.5)
 
@@ -343,7 +476,7 @@ function doHop()
         end
     end
 
-    startLoading("Đang xác nhận")
+    startLoading("Đang xác nhận", "arrow", "★", Color3.fromRGB(180, 130, 255))
     startPulse(Color3.fromRGB(180, 130, 255))
     task.wait(1.5)
 
@@ -369,22 +502,21 @@ function doHop()
         pickFrom = finalPool
     end
 
-    local topCount = math.min(3, #pickFrom)
-    if topCount == 0 then
+    if #pickFrom == 0 then
         IsScanning = false
         stopLoading("Không có server!", Color3.fromRGB(255, 100, 100))
         stopPulse()
         return
     end
 
-    local target = pickFrom[math.random(1, topCount)]
+    local topN = math.min(3, #pickFrom)
+    local target = pickFrom[math.random(1, topN)]
 
-    startLoading("Đang vào server")
+    startLoading("Đang vào server", "block", "▶", Color3.fromRGB(60, 220, 150))
     startPulse(Color3.fromRGB(60, 220, 150))
-    task.wait(0.5)
 
-    IsScanning = false
     Blacklist[target.id] = true
+    IsScanning = false
 
     local ok = pcall(function()
         TeleportService:TeleportToPlaceInstance(PLACE_ID, target.id, LocalPlayer)
@@ -395,7 +527,3 @@ function doHop()
         stopPulse()
     end
 end
-
-Glow.ImageTransparency = 0.85
-Glow.Size = UDim2.new(0, 120, 0, 120)
-Glow.Position = UDim2.new(0.5, -60, 0, -20)
