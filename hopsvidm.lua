@@ -21,12 +21,13 @@ local http = getHttp()
 local Blacklist = {}
 local IsScanning = false
 local LoaderActive = false
-local LoaderText = "Đang dò server"
+local LoaderText = "Đang check qua server hiện có"
 local SpinIndex = 1
 local SpinTimer = 0
 local SpinConn = nil
 local IsMinimized = false
 local CurrentTarget = nil
+local teleportSuccess = false
 
 if CoreGui:FindFirstChild("HopUI") then CoreGui.HopUI:Destroy() end
 
@@ -39,7 +40,7 @@ ScreenGui.DisplayOrder = 999999
 ScreenGui.Parent = CoreGui
 
 local Main = Instance.new("Frame")
-Main.Size = UDim2.new(0, 240, 0, 180)
+Main.Size = UDim2.new(0, 260, 0, 180)
 Main.Position = UDim2.new(0, 20, 0.5, -90)
 Main.BackgroundColor3 = Color3.fromRGB(22, 24, 34)
 Main.BorderSizePixel = 0
@@ -160,7 +161,7 @@ local function startSpin()
     if SpinConn then SpinConn:Disconnect() end
     SpinConn = RunService.Heartbeat:Connect(function(dt)
         SpinTimer = SpinTimer + dt
-        if SpinTimer >= 0.18 then
+        if SpinTimer >= 0.15 then
             SpinTimer = 0
             SpinIndex = SpinIndex + 1
             if SpinIndex > #SPINNER then SpinIndex = 1 end
@@ -284,11 +285,11 @@ local function toggleMinimize()
     if IsMinimized then
         Content.Visible = false
         Main.ClipsDescendants = true
-        Main.Size = UDim2.new(0, 240, 0, 36)
+        Main.Size = UDim2.new(0, 260, 0, 36)
         MinBtn.Text = "+"
     else
         Main.ClipsDescendants = false
-        Main.Size = UDim2.new(0, 240, 0, 180)
+        Main.Size = UDim2.new(0, 260, 0, 180)
         MinBtn.Text = "−"
         Content.Visible = true
     end
@@ -296,77 +297,179 @@ end
 
 MinBtn.MouseButton1Click:Connect(toggleMinimize)
 
-local function requestPage(cursor)
-    if not http then return nil end
+local function requestPageSafe(cursor)
+    if not http then return nil, "NO_HTTP" end
     local url = string.format(
         "https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100&cursor=%s",
         PLACE_ID, cursor or ""
     )
-    local ok, res = pcall(function()
-        return http({ Url = url, Method = "GET", Headers = { ["Accept"] = "application/json" } })
-    end)
-    if not ok or not res or not res.Body then return nil end
-    local ok2, data = pcall(function()
-        return HttpService:JSONDecode(res.Body)
-    end)
-    if not ok2 or not data then return nil end
-    return data
+    for attempt = 1, 3 do
+        local ok, res = pcall(function()
+            return http({
+                Url = url,
+                Method = "GET",
+                Headers = { ["Accept"] = "application/json" }
+            })
+        end)
+        if ok and res and res.Body and #res.Body > 0 then
+            local ok2, data = pcall(function()
+                return HttpService:JSONDecode(res.Body)
+            end)
+            if ok2 and data then
+                return data, nil
+            end
+        end
+        task.wait(0.1)
+    end
+    return nil, "REQUEST_FAIL"
 end
 
-local function scanPass(maxPlayers, maxPages)
+local function fullScan(maxPages)
     local result = {}
     local cursor = ""
     local pages = 0
     local totalSeen = 0
+    local errCode = nil
 
     while pages < maxPages do
-        local data = requestPage(cursor)
-        if not data or not data.data then break end
+        local data, err = requestPageSafe(cursor)
+        if not data then
+            if pages == 0 then errCode = err end
+            break
+        end
+
+        if not data.data or type(data.data) ~= "table" then
+            if pages == 0 then errCode = "NO_DATA" end
+            break
+        end
+
         local cnt = 0
         for _, s in ipairs(data.data) do
             cnt = cnt + 1
             totalSeen = totalSeen + 1
             local pc = s.playing or 0
-            local id = s.id
-            if pc >= 1 and pc <= maxPlayers then
-                if id ~= JOB_ID and not Blacklist[id] then
+            if pc >= 1 and pc <= 12 then
+                local id = s.id
+                if id and id ~= JOB_ID and not Blacklist[id] then
                     result[id] = {
                         id = id,
                         ping = s.ping or 999,
                         fps = s.fps or 60,
-                        playing = pc
+                        playing = pc,
+                        max = s.maxPlayers or 12
                     }
                 end
             end
         end
+
         if cnt == 0 then break end
+
         cursor = data.nextPageCursor
         if not cursor or cursor == "" or cursor == "null" then break end
+
         pages = pages + 1
-        task.wait(0.02)
     end
 
-    return result, totalSeen
+    return result, totalSeen, errCode
 end
 
-local function calculateScore(server, stabilityBonus)
-    local playerScore = 0
+local function scanTriplePass()
+    local pass1, seen1, err1 = fullScan(12)
+
+    if err1 and seen1 == 0 then
+        return nil, "API_FAIL"
+    end
+    if seen1 == 0 then
+        return nil, "NO_SERVER"
+    end
+
+    local count1 = 0
+    for _ in pairs(pass1) do count1 = count1 + 1 end
+    if count1 == 0 then
+        return nil, "NO_ONE_PLAYER"
+    end
+
+    task.wait(5.5)
+    local pass2 = fullScan(12)
+
+    task.wait(5.5)
+    local pass3 = fullScan(12)
+
+    local stable = {}
+    for id, s3 in pairs(pass3) do
+        local s1 = pass1[id]
+        local s2 = pass2[id]
+        if s1 and s2 then
+            s3.stability = 3
+            if s1.playing == 1 and s2.playing == 1 and s3.playing == 1 then
+                s3.afkLock = true
+                s3.pingBefore = s1.ping
+                s3.fpsBefore = s1.fps
+            end
+            table.insert(stable, s3)
+        elseif s1 then
+            s3.stability = 2
+            table.insert(stable, s3)
+        end
+    end
+
+    if #stable == 0 then
+        for id, s in pairs(pass1) do
+            s.stability = 1
+            table.insert(stable, s)
+        end
+    end
+
+    return stable, nil
+end
+
+local function getAfkScore(server)
+    local score = 0
+
     if server.playing == 1 then
-        playerScore = 100
+        score = score + 1000
     elseif server.playing == 2 then
-        playerScore = 40
-    elseif server.playing == 3 then
-        playerScore = 10
-    elseif server.playing <= 5 then
-        playerScore = 3
+        score = score + 200
+    else
+        score = score - 1000
     end
-    local fpsScore = math.max(0, 60 - server.fps) * 1.5
-    local pingScore = math.min(server.ping, 500) / 5
-    local stabilityScore = stabilityBonus * 60
-    return playerScore + fpsScore + pingScore + stabilityScore
-end
 
-local teleportSuccess = false
+    if server.afkLock then
+        score = score + 800
+    end
+
+    if server.stability == 3 then
+        score = score + 600
+    elseif server.stability == 2 then
+        score = score + 200
+    end
+
+    if server.fps <= 10 then
+        score = score + 500
+    elseif server.fps <= 20 then
+        score = score + 400
+    elseif server.fps <= 30 then
+        score = score + 300
+    elseif server.fps <= 45 then
+        score = score + 150
+    end
+
+    if server.ping >= 300 then
+        score = score + 500
+    elseif server.ping >= 200 then
+        score = score + 400
+    elseif server.ping >= 150 then
+        score = score + 300
+    elseif server.ping >= 100 then
+        score = score + 150
+    end
+
+    if server.afkLock and server.playing == 1 then
+        score = score + 500
+    end
+
+    return score
+end
 
 TeleportService.TeleportInitFailed:Connect(function(player, teleportResult, errorMessage, placeId, teleportOptions)
     if player == LocalPlayer then
@@ -376,7 +479,7 @@ TeleportService.TeleportInitFailed:Connect(function(player, teleportResult, erro
             CurrentTarget = nil
         end
         if not teleportSuccess then
-            stopSpin("Lỗi! Bấm lại.", Color3.fromRGB(255, 100, 100))
+            stopSpin("Server lỗi! Bấm lại.", Color3.fromRGB(255, 100, 100))
             Btn.BackgroundColor3 = Color3.fromRGB(60, 180, 120)
             Btn.Text = "HOP"
             IsScanning = false
@@ -392,63 +495,72 @@ function doHop()
 
     Btn.BackgroundColor3 = Color3.fromRGB(200, 160, 60)
     Btn.Text = "..."
-    changeLoader("Đang dò server", Color3.fromRGB(255, 200, 100))
+    changeLoader("Đang check qua server hiện có", Color3.fromRGB(255, 200, 100))
     startSpin()
-    task.wait(0.1)
+    task.wait(0.05)
 
     if not http then
         IsScanning = false
-        stopSpin("Lỗi kết nối!", Color3.fromRGB(255, 100, 100))
+        stopSpin("Executor không HTTP!", Color3.fromRGB(255, 100, 100))
         Btn.BackgroundColor3 = Color3.fromRGB(60, 180, 120)
         Btn.Text = "HOP"
         return
     end
 
-    local pass1, totalSeen1 = scanPass(2, 12)
+    local pass1, seen1, err1 = fullScan(12)
+
+    if err1 and seen1 == 0 then
+        IsScanning = false
+        stopSpin("API lỗi! Thử lại.", Color3.fromRGB(255, 100, 100))
+        Btn.BackgroundColor3 = Color3.fromRGB(60, 180, 120)
+        Btn.Text = "HOP"
+        return
+    end
+
+    if seen1 == 0 then
+        IsScanning = false
+        stopSpin("Game hết server!", Color3.fromRGB(255, 100, 100))
+        Btn.BackgroundColor3 = Color3.fromRGB(60, 180, 120)
+        Btn.Text = "HOP"
+        return
+    end
+
     local count1 = 0
     for _ in pairs(pass1) do count1 = count1 + 1 end
 
     if count1 == 0 then
-        changeLoader("Mở rộng tìm kiếm", Color3.fromRGB(255, 180, 100))
-        task.wait(0.5)
-        pass1, totalSeen1 = scanPass(6, 12)
-        count1 = 0
-        for _ in pairs(pass1) do count1 = count1 + 1 end
-    end
-
-    if count1 == 0 then
-        changeLoader("Mở rộng tối đa", Color3.fromRGB(255, 150, 100))
-        task.wait(0.5)
-        pass1, totalSeen1 = scanPass(12, 12)
-        count1 = 0
-        for _ in pairs(pass1) do count1 = count1 + 1 end
-    end
-
-    if count1 == 0 then
         IsScanning = false
-        if totalSeen1 == 0 then
-            stopSpin("API lỗi! Thử lại.", Color3.fromRGB(255, 100, 100))
-        else
-            stopSpin("Không có server!", Color3.fromRGB(255, 100, 100))
-        end
+        stopSpin("Không có server 1 người!", Color3.fromRGB(255, 150, 100))
         Btn.BackgroundColor3 = Color3.fromRGB(60, 180, 120)
         Btn.Text = "HOP"
         return
     end
 
-    changeLoader("Đang lọc", Color3.fromRGB(100, 180, 255))
-    task.wait(2.5)
+    changeLoader("Đang lọc server", Color3.fromRGB(100, 180, 255))
+    task.wait(5.5)
 
-    local pass2 = scanPass(12, 12)
+    local pass2 = fullScan(12)
+
+    changeLoader("Đang lọc server", Color3.fromRGB(140, 200, 255))
+    task.wait(5.5)
+
+    local pass3 = fullScan(12)
 
     local stable = {}
-    for id, s in pairs(pass2) do
-        if pass1[id] then
-            s.stability = 2
-            if s.playing == pass1[id].playing then
-                s.stability = 3
+    for id, s3 in pairs(pass3) do
+        local s1 = pass1[id]
+        local s2 = pass2[id]
+        if s1 and s2 then
+            s3.stability = 3
+            if s1.playing == 1 and s2.playing == 1 and s3.playing == 1 then
+                s3.afkLock = true
+                s3.pingBefore = s1.ping
+                s3.fpsBefore = s1.fps
             end
-            table.insert(stable, s)
+            table.insert(stable, s3)
+        elseif s1 then
+            s3.stability = 2
+            table.insert(stable, s3)
         end
     end
 
@@ -459,34 +571,7 @@ function doHop()
         end
     end
 
-    changeLoader("Đang tránh server lỗi", Color3.fromRGB(200, 140, 255))
-    task.wait(1.2)
-
-    changeLoader("Đang tạo cổng vào", Color3.fromRGB(140, 220, 255))
-    task.wait(0.8)
-
-    local finalPool = {}
-    for _, s in ipairs(stable) do
-        s.score = calculateScore(s, s.stability)
-        table.insert(finalPool, s)
-    end
-
-    table.sort(finalPool, function(a, b)
-        return a.score > b.score
-    end)
-
-    local onePlayer = {}
-    for _, s in ipairs(finalPool) do
-        if s.playing == 1 then
-            table.insert(onePlayer, s)
-        end
-    end
-
-    local pickFrom = onePlayer
-    if #pickFrom == 0 then pickFrom = finalPool end
-
-    local topCount = math.min(3, #pickFrom)
-    if topCount == 0 then
+    if #stable == 0 then
         IsScanning = false
         stopSpin("Không có server!", Color3.fromRGB(255, 100, 100))
         Btn.BackgroundColor3 = Color3.fromRGB(60, 180, 120)
@@ -494,22 +579,64 @@ function doHop()
         return
     end
 
-    local target = pickFrom[math.random(1, topCount)]
+    changeLoader("Đã xác định server ít người", Color3.fromRGB(200, 140, 255))
+    task.wait(1.2)
+
+    for _, s in ipairs(stable) do
+        s.score = getAfkScore(s)
+    end
+
+    table.sort(stable, function(a, b)
+        return a.score > b.score
+    end)
+
+    local onePlayer = {}
+    for _, s in ipairs(stable) do
+        if s.playing == 1 and s.stability == 3 then
+            table.insert(onePlayer, s)
+        end
+    end
+
+    if #onePlayer == 0 then
+        for _, s in ipairs(stable) do
+            if s.playing == 1 then
+                table.insert(onePlayer, s)
+            end
+        end
+    end
+
+    local pool = onePlayer
+    if #pool == 0 then
+        pool = stable
+    end
+
+    if #pool == 0 then
+        IsScanning = false
+        stopSpin("Không có server!", Color3.fromRGB(255, 100, 100))
+        Btn.BackgroundColor3 = Color3.fromRGB(60, 180, 120)
+        Btn.Text = "HOP"
+        return
+    end
+
+    local target = pool[1]
     CurrentTarget = target.id
+
+    changeLoader("Đang tạo cổng kết nối", Color3.fromRGB(140, 220, 255))
+    task.wait(1.5)
 
     changeLoader("Đang vào", Color3.fromRGB(120, 255, 160))
     Btn.Text = ">>"
-    task.wait(0.4)
+    task.wait(0.5)
 
     IsScanning = false
     teleportSuccess = false
+    Blacklist[target.id] = true
 
     local ok = pcall(function()
         TeleportService:TeleportToPlaceInstance(PLACE_ID, target.id, LocalPlayer)
     end)
 
     if not ok then
-        Blacklist[target.id] = true
         CurrentTarget = nil
         stopSpin("Lỗi! Bấm lại.", Color3.fromRGB(255, 100, 100))
         Btn.BackgroundColor3 = Color3.fromRGB(60, 180, 120)
@@ -517,6 +644,5 @@ function doHop()
         return
     end
 
-    Blacklist[target.id] = true
     teleportSuccess = true
 end
