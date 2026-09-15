@@ -3,6 +3,7 @@ local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
 local CoreGui = game:GetService("CoreGui")
 local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
 
 local LocalPlayer = Players.LocalPlayer
 local PLACE_ID = game.PlaceId
@@ -20,7 +21,12 @@ local http = getHttp()
 local Blacklist = {}
 local IsScanning = false
 local LoaderActive = false
-local loaderCoroutine = nil
+local LoaderText = "Đang dò server"
+local SpinIndex = 1
+local SpinTimer = 0
+local SpinConn = nil
+local IsMinimized = false
+local CurrentTarget = nil
 
 if CoreGui:FindFirstChild("HopUI") then CoreGui.HopUI:Destroy() end
 
@@ -32,40 +38,115 @@ ScreenGui.IgnoreGuiInset = true
 ScreenGui.DisplayOrder = 999999
 ScreenGui.Parent = CoreGui
 
-local Container = Instance.new("Frame")
-Container.Size = UDim2.new(0, 200, 0, 110)
-Container.Position = UDim2.new(0, 20, 0.5, -55)
-Container.BackgroundTransparency = 1
-Container.Parent = ScreenGui
+local Main = Instance.new("Frame")
+Main.Size = UDim2.new(0, 240, 0, 180)
+Main.Position = UDim2.new(0, 20, 0.5, -90)
+Main.BackgroundColor3 = Color3.fromRGB(22, 24, 34)
+Main.BorderSizePixel = 0
+Main.Active = true
+Main.Parent = ScreenGui
+
+local MainCorner = Instance.new("UICorner")
+MainCorner.CornerRadius = UDim.new(0, 12)
+MainCorner.Parent = Main
+
+local MainStroke = Instance.new("UIStroke")
+MainStroke.Color = Color3.fromRGB(60, 200, 130)
+MainStroke.Thickness = 1.5
+MainStroke.Transparency = 0.3
+MainStroke.Parent = Main
+
+local Title = Instance.new("Frame")
+Title.Size = UDim2.new(1, 0, 0, 36)
+Title.BackgroundColor3 = Color3.fromRGB(32, 36, 50)
+Title.BorderSizePixel = 0
+Title.Parent = Main
+
+local TitleCorner = Instance.new("UICorner")
+TitleCorner.CornerRadius = UDim.new(0, 12)
+TitleCorner.Parent = Title
+
+local TitleFix = Instance.new("Frame")
+TitleFix.Size = UDim2.new(1, 0, 0, 12)
+TitleFix.Position = UDim2.new(0, 0, 1, -12)
+TitleFix.BackgroundColor3 = Color3.fromRGB(32, 36, 50)
+TitleFix.BorderSizePixel = 0
+TitleFix.Parent = Title
+
+local TitleText = Instance.new("TextLabel")
+TitleText.Size = UDim2.new(1, -50, 1, 0)
+TitleText.Position = UDim2.new(0, 12, 0, 0)
+TitleText.BackgroundTransparency = 1
+TitleText.Text = "HOPSVIDM"
+TitleText.TextColor3 = Color3.fromRGB(255, 255, 255)
+TitleText.Font = Enum.Font.GothamBold
+TitleText.TextSize = 13
+TitleText.TextXAlignment = Enum.TextXAlignment.Left
+TitleText.Parent = Title
+
+local MinBtn = Instance.new("TextButton")
+MinBtn.Size = UDim2.new(0, 24, 0, 24)
+MinBtn.Position = UDim2.new(1, -30, 0, 6)
+MinBtn.BackgroundColor3 = Color3.fromRGB(90, 100, 140)
+MinBtn.Text = "−"
+MinBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+MinBtn.Font = Enum.Font.GothamBold
+MinBtn.TextSize = 15
+MinBtn.Parent = Title
+
+local MinCorner = Instance.new("UICorner")
+MinCorner.CornerRadius = UDim.new(0, 6)
+MinCorner.Parent = MinBtn
+
+local Content = Instance.new("Frame")
+Content.Size = UDim2.new(1, 0, 1, -36)
+Content.Position = UDim2.new(0, 0, 0, 36)
+Content.BackgroundTransparency = 1
+Content.Parent = Main
 
 local Btn = Instance.new("TextButton")
-Btn.Size = UDim2.new(0, 80, 0, 80)
-Btn.Position = UDim2.new(0.5, -40, 0, 0)
+Btn.Size = UDim2.new(0, 60, 0, 60)
+Btn.Position = UDim2.new(0.5, -30, 0, 8)
 Btn.BackgroundColor3 = Color3.fromRGB(60, 180, 120)
 Btn.Text = "HOP"
 Btn.TextColor3 = Color3.fromRGB(255, 255, 255)
 Btn.Font = Enum.Font.GothamBold
-Btn.TextSize = 18
+Btn.TextSize = 14
 Btn.AutoButtonColor = false
 Btn.Active = true
-Btn.Parent = Container
+Btn.Parent = Content
 
 local BtnCorner = Instance.new("UICorner")
 BtnCorner.CornerRadius = UDim.new(1, 0)
 BtnCorner.Parent = Btn
 
+local BtnStroke = Instance.new("UIStroke")
+BtnStroke.Color = Color3.fromRGB(255, 255, 255)
+BtnStroke.Thickness = 1.5
+BtnStroke.Transparency = 0.5
+BtnStroke.Parent = Btn
+
+local SubTitle = Instance.new("TextLabel")
+SubTitle.Size = UDim2.new(1, -24, 0, 12)
+SubTitle.Position = UDim2.new(0, 12, 0, 74)
+SubTitle.BackgroundTransparency = 1
+SubTitle.Text = "SERVER ÍT NGƯỜI"
+SubTitle.TextColor3 = Color3.fromRGB(120, 220, 180)
+SubTitle.Font = Enum.Font.GothamBold
+SubTitle.TextSize = 9
+SubTitle.Parent = Content
+
 local StatusLabel = Instance.new("TextLabel")
-StatusLabel.Size = UDim2.new(1, 0, 0, 22)
-StatusLabel.Position = UDim2.new(0, 0, 0, 84)
-StatusLabel.BackgroundColor3 = Color3.fromRGB(20, 22, 30)
-StatusLabel.BackgroundTransparency = 0.1
+StatusLabel.Size = UDim2.new(1, -24, 0, 26)
+StatusLabel.Position = UDim2.new(0, 12, 0, 90)
+StatusLabel.BackgroundColor3 = Color3.fromRGB(38, 42, 58)
 StatusLabel.BorderSizePixel = 0
 StatusLabel.Text = "Sẵn sàng"
 StatusLabel.TextColor3 = Color3.fromRGB(200, 220, 255)
 StatusLabel.Font = Enum.Font.GothamBold
-StatusLabel.TextSize = 11
-StatusLabel.TextWrapped = false
-StatusLabel.Parent = Container
+StatusLabel.TextSize = 10
+StatusLabel.TextWrapped = true
+StatusLabel.Parent = Content
 
 local StatusCorner = Instance.new("UICorner")
 StatusCorner.CornerRadius = UDim.new(0, 6)
@@ -73,79 +154,147 @@ StatusCorner.Parent = StatusLabel
 
 local SPINNER = {"|", "/", "-", "\\"}
 
-local function startLoading(text)
-    LoaderActive = false
-    task.wait()
+local function startSpin()
     LoaderActive = true
-    StatusLabel.TextColor3 = Color3.fromRGB(255, 220, 120)
-    loaderCoroutine = task.spawn(function()
-        local i = 1
-        while LoaderActive do
-            StatusLabel.Text = text .. " " .. SPINNER[i]
-            i = i + 1
-            if i > #SPINNER then i = 1 end
-            task.wait(0.15)
+    SpinTimer = 0
+    if SpinConn then SpinConn:Disconnect() end
+    SpinConn = RunService.Heartbeat:Connect(function(dt)
+        SpinTimer = SpinTimer + dt
+        if SpinTimer >= 0.18 then
+            SpinTimer = 0
+            SpinIndex = SpinIndex + 1
+            if SpinIndex > #SPINNER then SpinIndex = 1 end
+            StatusLabel.Text = LoaderText .. " " .. SPINNER[SpinIndex]
         end
     end)
 end
 
-local function stopLoading(finalText, color)
+local function changeLoader(text, color)
+    LoaderText = text
+    if color then
+        StatusLabel.TextColor3 = color
+    end
+end
+
+local function stopSpin(finalText, color)
     LoaderActive = false
-    loaderCoroutine = nil
+    if SpinConn then
+        SpinConn:Disconnect()
+        SpinConn = nil
+    end
     if finalText then
         StatusLabel.Text = finalText
         StatusLabel.TextColor3 = color or Color3.fromRGB(200, 220, 255)
     end
 end
 
-local dragActive = false
-local dragStartInput = nil
-local dragStartPos = nil
-local dragMoved = false
+local drag = {
+    active = false,
+    target = nil,
+    startInput = nil,
+    startPos = nil,
+    moved = false,
+    isBtn = false
+}
+
+local function beginDrag(input, target, isBtn)
+    drag.active = true
+    drag.target = target
+    drag.startInput = input.Position
+    drag.startPos = target.Position
+    drag.moved = false
+    drag.isBtn = isBtn
+    if isBtn then
+        Btn.Size = UDim2.new(0, 54, 0, 54)
+        Btn.Position = UDim2.new(0.5, -27, 0, 11)
+    end
+end
+
+local function moveDrag(input)
+    if not drag.active then return end
+    local delta = input.Position - drag.startInput
+    if not drag.moved then
+        if math.abs(delta.X) > 8 or math.abs(delta.Y) > 8 then
+            drag.moved = true
+        else
+            return
+        end
+    end
+    drag.target.Position = UDim2.new(
+        drag.startPos.X.Scale,
+        drag.startPos.X.Offset + delta.X,
+        drag.startPos.Y.Scale,
+        drag.startPos.Y.Offset + delta.Y
+    )
+end
+
+local function endDrag()
+    if not drag.active then return end
+    local wasBtn = drag.isBtn
+    local wasMoved = drag.moved
+    drag.active = false
+    drag.target = nil
+
+    if wasBtn then
+        Btn.Size = UDim2.new(0, 60, 0, 60)
+        Btn.Position = UDim2.new(0.5, -30, 0, 8)
+        if not wasMoved then
+            task.spawn(function()
+                local ok = pcall(doHop)
+                if not ok then
+                    stopSpin("Lỗi!", Color3.fromRGB(255, 100, 100))
+                    IsScanning = false
+                    Btn.BackgroundColor3 = Color3.fromRGB(60, 180, 120)
+                    Btn.Text = "HOP"
+                end
+            end)
+        end
+    end
+end
+
+Title.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        beginDrag(input, Main, false)
+    end
+end)
 
 Btn.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1
         or input.UserInputType == Enum.UserInputType.Touch then
-        dragActive = true
-        dragMoved = false
-        dragStartInput = input.Position
-        dragStartPos = Container.Position
-        Btn.BackgroundColor3 = Color3.fromRGB(40, 140, 90)
+        beginDrag(input, Main, true)
     end
 end)
 
 UserInputService.InputChanged:Connect(function(input)
-    if not dragActive then return end
+    if not drag.active then return end
     if input.UserInputType ~= Enum.UserInputType.MouseMovement
         and input.UserInputType ~= Enum.UserInputType.Touch then return end
-    local delta = input.Position - dragStartInput
-    if math.abs(delta.X) > 8 or math.abs(delta.Y) > 8 then
-        dragMoved = true
-    end
-    Container.Position = UDim2.new(
-        dragStartPos.X.Scale,
-        dragStartPos.X.Offset + delta.X,
-        dragStartPos.Y.Scale,
-        dragStartPos.Y.Offset + delta.Y
-    )
+    moveDrag(input)
 end)
 
 UserInputService.InputEnded:Connect(function(input)
-    if not dragActive then return end
     if input.UserInputType ~= Enum.UserInputType.MouseButton1
         and input.UserInputType ~= Enum.UserInputType.Touch then return end
-    dragActive = false
-    Btn.BackgroundColor3 = Color3.fromRGB(60, 180, 120)
-    if not dragMoved then
-        task.spawn(function()
-            local ok = pcall(doHop)
-            if not ok then
-                stopLoading("Lỗi!", Color3.fromRGB(255, 100, 100))
-                IsScanning = false
-            end
-        end)
-    end
+    endDrag()
 end)
+
+local function toggleMinimize()
+    IsMinimized = not IsMinimized
+    if IsMinimized then
+        Content.Visible = false
+        Main.ClipsDescendants = true
+        Main.Size = UDim2.new(0, 240, 0, 36)
+        MinBtn.Text = "+"
+    else
+        Main.ClipsDescendants = false
+        Main.Size = UDim2.new(0, 240, 0, 180)
+        MinBtn.Text = "−"
+        Content.Visible = true
+    end
+end
+
+MinBtn.MouseButton1Click:Connect(toggleMinimize)
 
 local function requestPage(cursor)
     if not http then return nil end
@@ -168,7 +317,7 @@ local function scanPass(maxPlayers, maxPages)
     local result = {}
     local cursor = ""
     local pages = 0
-    local totalScanned = 0
+    local totalSeen = 0
 
     while pages < maxPages do
         local data = requestPage(cursor)
@@ -176,7 +325,7 @@ local function scanPass(maxPlayers, maxPages)
         local cnt = 0
         for _, s in ipairs(data.data) do
             cnt = cnt + 1
-            totalScanned = totalScanned + 1
+            totalSeen = totalSeen + 1
             local pc = s.playing or 0
             local id = s.id
             if pc >= 1 and pc <= maxPlayers then
@@ -185,8 +334,7 @@ local function scanPass(maxPlayers, maxPages)
                         id = id,
                         ping = s.ping or 999,
                         fps = s.fps or 60,
-                        playing = pc,
-                        max = s.maxPlayers or 12
+                        playing = pc
                     }
                 end
             end
@@ -198,7 +346,7 @@ local function scanPass(maxPlayers, maxPages)
         task.wait(0.02)
     end
 
-    return result, totalScanned
+    return result, totalSeen
 end
 
 local function calculateScore(server, stabilityBonus)
@@ -209,46 +357,89 @@ local function calculateScore(server, stabilityBonus)
         playerScore = 40
     elseif server.playing == 3 then
         playerScore = 10
+    elseif server.playing <= 5 then
+        playerScore = 3
     end
-
     local fpsScore = math.max(0, 60 - server.fps) * 1.5
-
     local pingScore = math.min(server.ping, 500) / 5
-
     local stabilityScore = stabilityBonus * 60
-
-    local total = playerScore + fpsScore + pingScore + stabilityScore
-    return total
+    return playerScore + fpsScore + pingScore + stabilityScore
 end
+
+local teleportSuccess = false
+
+TeleportService.TeleportInitFailed:Connect(function(player, teleportResult, errorMessage, placeId, teleportOptions)
+    if player == LocalPlayer then
+        warn("[Hop] Teleport thất bại: " .. tostring(errorMessage))
+        if CurrentTarget then
+            Blacklist[CurrentTarget] = true
+            CurrentTarget = nil
+        end
+        if not teleportSuccess then
+            stopSpin("Lỗi! Bấm lại.", Color3.fromRGB(255, 100, 100))
+            Btn.BackgroundColor3 = Color3.fromRGB(60, 180, 120)
+            Btn.Text = "HOP"
+            IsScanning = false
+        end
+    end
+end)
 
 function doHop()
     if IsScanning then return end
     IsScanning = true
 
-    startLoading("Đang dò server")
+    if IsMinimized then toggleMinimize() end
+
+    Btn.BackgroundColor3 = Color3.fromRGB(200, 160, 60)
+    Btn.Text = "..."
+    changeLoader("Đang dò server", Color3.fromRGB(255, 200, 100))
+    startSpin()
     task.wait(0.1)
 
     if not http then
         IsScanning = false
-        stopLoading("Lỗi kết nối!", Color3.fromRGB(255, 100, 100))
+        stopSpin("Lỗi kết nối!", Color3.fromRGB(255, 100, 100))
+        Btn.BackgroundColor3 = Color3.fromRGB(60, 180, 120)
+        Btn.Text = "HOP"
         return
     end
 
-    local pass1 = select(1, scanPass(2, 12))
-
+    local pass1, totalSeen1 = scanPass(2, 12)
     local count1 = 0
     for _ in pairs(pass1) do count1 = count1 + 1 end
 
     if count1 == 0 then
+        changeLoader("Mở rộng tìm kiếm", Color3.fromRGB(255, 180, 100))
+        task.wait(0.5)
+        pass1, totalSeen1 = scanPass(6, 12)
+        count1 = 0
+        for _ in pairs(pass1) do count1 = count1 + 1 end
+    end
+
+    if count1 == 0 then
+        changeLoader("Mở rộng tối đa", Color3.fromRGB(255, 150, 100))
+        task.wait(0.5)
+        pass1, totalSeen1 = scanPass(12, 12)
+        count1 = 0
+        for _ in pairs(pass1) do count1 = count1 + 1 end
+    end
+
+    if count1 == 0 then
         IsScanning = false
-        stopLoading("Không có server!", Color3.fromRGB(255, 100, 100))
+        if totalSeen1 == 0 then
+            stopSpin("API lỗi! Thử lại.", Color3.fromRGB(255, 100, 100))
+        else
+            stopSpin("Không có server!", Color3.fromRGB(255, 100, 100))
+        end
+        Btn.BackgroundColor3 = Color3.fromRGB(60, 180, 120)
+        Btn.Text = "HOP"
         return
     end
 
-    startLoading("Đang phân tích")
+    changeLoader("Đang lọc", Color3.fromRGB(100, 180, 255))
     task.wait(2.5)
 
-    local pass2 = select(1, scanPass(2, 12))
+    local pass2 = scanPass(12, 12)
 
     local stable = {}
     for id, s in pairs(pass2) do
@@ -262,19 +453,21 @@ function doHop()
     end
 
     if #stable == 0 then
-        for id, s in pairs(pass1) do
+        for _, s in pairs(pass1) do
             s.stability = 1
             table.insert(stable, s)
         end
     end
 
-    startLoading("Đang xác nhận")
-    task.wait(1.5)
+    changeLoader("Đang tránh server lỗi", Color3.fromRGB(200, 140, 255))
+    task.wait(1.2)
+
+    changeLoader("Đang tạo cổng vào", Color3.fromRGB(140, 220, 255))
+    task.wait(0.8)
 
     local finalPool = {}
     for _, s in ipairs(stable) do
-        local total = calculateScore(s, s.stability)
-        s.score = total
+        s.score = calculateScore(s, s.stability)
         table.insert(finalPool, s)
     end
 
@@ -290,30 +483,40 @@ function doHop()
     end
 
     local pickFrom = onePlayer
-    if #pickFrom == 0 then
-        pickFrom = finalPool
-    end
+    if #pickFrom == 0 then pickFrom = finalPool end
 
     local topCount = math.min(3, #pickFrom)
     if topCount == 0 then
         IsScanning = false
-        stopLoading("Không có server!", Color3.fromRGB(255, 100, 100))
+        stopSpin("Không có server!", Color3.fromRGB(255, 100, 100))
+        Btn.BackgroundColor3 = Color3.fromRGB(60, 180, 120)
+        Btn.Text = "HOP"
         return
     end
 
     local target = pickFrom[math.random(1, topCount)]
+    CurrentTarget = target.id
 
-    startLoading("Đang vào server")
-    task.wait(0.5)
+    changeLoader("Đang vào", Color3.fromRGB(120, 255, 160))
+    Btn.Text = ">>"
+    task.wait(0.4)
 
     IsScanning = false
-    Blacklist[target.id] = true
+    teleportSuccess = false
 
     local ok = pcall(function()
         TeleportService:TeleportToPlaceInstance(PLACE_ID, target.id, LocalPlayer)
     end)
 
     if not ok then
-        stopLoading("Lỗi! Bấm lại.", Color3.fromRGB(255, 100, 100))
+        Blacklist[target.id] = true
+        CurrentTarget = nil
+        stopSpin("Lỗi! Bấm lại.", Color3.fromRGB(255, 100, 100))
+        Btn.BackgroundColor3 = Color3.fromRGB(60, 180, 120)
+        Btn.Text = "HOP"
+        return
     end
+
+    Blacklist[target.id] = true
+    teleportSuccess = true
 end
