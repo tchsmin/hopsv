@@ -1,87 +1,173 @@
+-- ============================================
+-- AUTO HOP — Tự động tìm server 1-2 người
+-- Không nút bấm, chạy liên tục
+-- ============================================
+
 local Players = game:GetService("Players")
 local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
-local CoreGui = game:GetService("CoreGui")
 local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
 
 local LocalPlayer = Players.LocalPlayer
 local PLACE_ID = game.PlaceId
 local JOB_ID = game.JobId
 
+print("[AUTO HOP] Bắt đầu khởi động...")
+print("[AUTO HOP] PlaceId:", PLACE_ID)
+
+-- ==== HTTP FUNCTION ====
 local function getHttp()
-    if http_request then return http_request end
-    if request then return request end
-    if syn and syn.request then return syn.request end
-    if fluxus and fluxus.request then return fluxus.request end
-    return nil
+    if syn and syn.request then return syn.request, "syn.request" end
+    if http_request then return http_request, "http_request" end
+    if request then return request, "request" end
+    if fluxus and fluxus.request then return fluxus.request, "fluxus.request" end
+    if krnl and krnl.request then return krnl.request, "krnl.request" end
+    if http and http.request then return http.request, "http.request" end
+    if HttpGet then
+        return function(opts)
+            return { Body = HttpGet(opts.Url), StatusCode = 200 }
+        end, "HttpGet"
+    end
+    if game.HttpGet then
+        return function(opts)
+            return { Body = game:HttpGet(opts.Url), StatusCode = 200 }
+        end, "game.HttpGet"
+    end
+    return nil, "NONE"
 end
-local http = getHttp()
 
-local Blacklist = {}
-local IsScanning = false
-local LoaderActive = false
-local loaderCoroutine = nil
+local http, httpName = getHttp()
+print("[AUTO HOP] HTTP method:", httpName)
 
-if CoreGui:FindFirstChild("HopUI") then CoreGui.HopUI:Destroy() end
+-- ==== UI PARENT ====
+local function getUIParent()
+    local ok, cg = pcall(function() return game:GetService("CoreGui") end)
+    if ok and cg then
+        local ok2 = pcall(function() return cg:FindFirstChild("RobloxGui") end)
+        if ok2 then return cg end
+    end
+    if gethui then
+        local ok3, hui = pcall(gethui)
+        if ok3 and hui then return hui end
+    end
+    return LocalPlayer:WaitForChild("PlayerGui")
+end
 
+local UIParent = getUIParent()
+print("[AUTO HOP] UI Parent:", UIParent and UIParent.Name or "nil")
+
+-- ==== XOÁ UI CŨ ====
+pcall(function()
+    local old = UIParent:FindFirstChild("AutoHopUI")
+    if old then old:Destroy() end
+end)
+
+-- ==== TẠO UI ====
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "Hop server UI"
+ScreenGui.Name = "AutoHopUI"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 ScreenGui.IgnoreGuiInset = true
 ScreenGui.DisplayOrder = 999999
-ScreenGui.Parent = CoreGui
+ScreenGui.Parent = UIParent
 
-local Container = Instance.new("Frame")
-Container.Size = UDim2.new(0, 200, 0, 110)
-Container.Position = UDim2.new(0, 20, 0.5, -55)
-Container.BackgroundTransparency = 1
-Container.Parent = ScreenGui
+local Main = Instance.new("Frame")
+Main.Size = UDim2.new(0, 240, 0, 90)
+Main.Position = UDim2.new(0, 20, 0.5, -45)
+Main.BackgroundColor3 = Color3.fromRGB(18, 20, 28)
+Main.BorderSizePixel = 0
+Main.Parent = ScreenGui
 
-local Btn = Instance.new("TextButton")
-Btn.Size = UDim2.new(0, 80, 0, 80)
-Btn.Position = UDim2.new(0.5, -40, 0, 0)
-Btn.BackgroundColor3 = Color3.fromRGB(60, 180, 120)
-Btn.Text = "HOP"
-Btn.TextColor3 = Color3.fromRGB(255, 255, 255)
-Btn.Font = Enum.Font.GothamBold
-Btn.TextSize = 18
-Btn.AutoButtonColor = false
-Btn.Active = true
-Btn.Parent = Container
+local MainCorner = Instance.new("UICorner")
+MainCorner.CornerRadius = UDim.new(0, 10)
+MainCorner.Parent = Main
 
-local BtnCorner = Instance.new("UICorner")
-BtnCorner.CornerRadius = UDim.new(1, 0)
-BtnCorner.Parent = Btn
+local Stroke = Instance.new("UIStroke")
+Stroke.Color = Color3.fromRGB(60, 200, 130)
+Stroke.Thickness = 1.5
+Stroke.Transparency = 0.3
+Stroke.Parent = Main
+
+local TitleLabel = Instance.new("TextLabel")
+TitleLabel.Size = UDim2.new(1, -20, 0, 18)
+TitleLabel.Position = UDim2.new(0, 10, 0, 8)
+TitleLabel.BackgroundTransparency = 1
+TitleLabel.Text = "AUTO HOP · 1-2 NGƯỜI"
+TitleLabel.TextColor3 = Color3.fromRGB(120, 255, 180)
+TitleLabel.Font = Enum.Font.GothamBold
+TitleLabel.TextSize = 11
+TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+TitleLabel.Parent = Main
 
 local StatusLabel = Instance.new("TextLabel")
-StatusLabel.Size = UDim2.new(1, 0, 0, 22)
-StatusLabel.Position = UDim2.new(0, 0, 0, 84)
-StatusLabel.BackgroundColor3 = Color3.fromRGB(20, 22, 30)
-StatusLabel.BackgroundTransparency = 0.1
-StatusLabel.BorderSizePixel = 0
-StatusLabel.Text = "Sẵn sàng"
+StatusLabel.Size = UDim2.new(1, -20, 0, 18)
+StatusLabel.Position = UDim2.new(0, 10, 0, 32)
+StatusLabel.BackgroundTransparency = 1
+StatusLabel.Text = "Đang khởi động..."
 StatusLabel.TextColor3 = Color3.fromRGB(200, 220, 255)
 StatusLabel.Font = Enum.Font.GothamBold
 StatusLabel.TextSize = 11
-StatusLabel.TextWrapped = false
-StatusLabel.Parent = Container
+StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+StatusLabel.Parent = Main
 
-local StatusCorner = Instance.new("UICorner")
-StatusCorner.CornerRadius = UDim.new(0, 6)
-StatusCorner.Parent = StatusLabel
+local InfoLabel = Instance.new("TextLabel")
+InfoLabel.Size = UDim2.new(1, -20, 0, 18)
+InfoLabel.Position = UDim2.new(0, 10, 0, 54)
+InfoLabel.BackgroundTransparency = 1
+InfoLabel.Text = "Sẵn sàng"
+InfoLabel.TextColor3 = Color3.fromRGB(140, 180, 220)
+InfoLabel.Font = Enum.Font.Code
+InfoLabel.TextSize = 9
+InfoLabel.TextXAlignment = Enum.TextXAlignment.Left
+InfoLabel.Parent = Main
 
+print("[AUTO HOP] UI đã tạo")
+
+-- ==== DRAG ====
+local dragStart, startPos, dragging
+
+TitleLabel.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = Main.Position
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if not dragging then return end
+    if input.UserInputType ~= Enum.UserInputType.MouseMovement
+        and input.UserInputType ~= Enum.UserInputType.Touch then return end
+    local d = input.Position - dragStart
+    Main.Position = UDim2.new(
+        startPos.X.Scale, startPos.X.Offset + d.X,
+        startPos.Y.Scale, startPos.Y.Offset + d.Y
+    )
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = false
+    end
+end)
+
+-- ==== SPINNER ====
 local SPINNER = {"|", "/", "-", "\\"}
+local SpinActive = false
+local SpinThread = nil
+local BaseText = ""
 
-local function startLoading(text)
-    LoaderActive = false
-    task.wait()
-    LoaderActive = true
-    StatusLabel.TextColor3 = Color3.fromRGB(255, 220, 120)
-    loaderCoroutine = task.spawn(function()
+local function startSpin(text)
+    BaseText = text
+    if SpinThread then pcall(function() task.cancel(SpinThread) end) end
+    SpinActive = true
+    SpinThread = task.spawn(function()
         local i = 1
-        while LoaderActive do
-            StatusLabel.Text = text .. " " .. SPINNER[i]
+        while SpinActive do
+            StatusLabel.Text = BaseText .. " " .. SPINNER[i]
             i = i + 1
             if i > #SPINNER then i = 1 end
             task.wait(0.15)
@@ -89,63 +175,19 @@ local function startLoading(text)
     end)
 end
 
-local function stopLoading(finalText, color)
-    LoaderActive = false
-    loaderCoroutine = nil
-    if finalText then
-        StatusLabel.Text = finalText
-        StatusLabel.TextColor3 = color or Color3.fromRGB(200, 220, 255)
-    end
+local function setStatus(text, color)
+    SpinActive = false
+    if SpinThread then pcall(function() task.cancel(SpinThread) end) end
+    StatusLabel.Text = text
+    if color then StatusLabel.TextColor3 = color end
 end
 
-local dragActive = false
-local dragStartInput = nil
-local dragStartPos = nil
-local dragMoved = false
+local function setInfo(text)
+    InfoLabel.Text = text
+end
 
-Btn.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1
-        or input.UserInputType == Enum.UserInputType.Touch then
-        dragActive = true
-        dragMoved = false
-        dragStartInput = input.Position
-        dragStartPos = Container.Position
-        Btn.BackgroundColor3 = Color3.fromRGB(40, 140, 90)
-    end
-end)
-
-UserInputService.InputChanged:Connect(function(input)
-    if not dragActive then return end
-    if input.UserInputType ~= Enum.UserInputType.MouseMovement
-        and input.UserInputType ~= Enum.UserInputType.Touch then return end
-    local delta = input.Position - dragStartInput
-    if math.abs(delta.X) > 8 or math.abs(delta.Y) > 8 then
-        dragMoved = true
-    end
-    Container.Position = UDim2.new(
-        dragStartPos.X.Scale,
-        dragStartPos.X.Offset + delta.X,
-        dragStartPos.Y.Scale,
-        dragStartPos.Y.Offset + delta.Y
-    )
-end)
-
-UserInputService.InputEnded:Connect(function(input)
-    if not dragActive then return end
-    if input.UserInputType ~= Enum.UserInputType.MouseButton1
-        and input.UserInputType ~= Enum.UserInputType.Touch then return end
-    dragActive = false
-    Btn.BackgroundColor3 = Color3.fromRGB(60, 180, 120)
-    if not dragMoved then
-        task.spawn(function()
-            local ok = pcall(doHop)
-            if not ok then
-                stopLoading("Lỗi!", Color3.fromRGB(255, 100, 100))
-                IsScanning = false
-            end
-        end)
-    end
-end)
+-- ==== SCAN ====
+local Blacklist = {}
 
 local function requestPage(cursor)
     if not http then return nil end
@@ -153,167 +195,134 @@ local function requestPage(cursor)
         "https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100&cursor=%s",
         PLACE_ID, cursor or ""
     )
-    local ok, res = pcall(function()
-        return http({ Url = url, Method = "GET", Headers = { ["Accept"] = "application/json" } })
-    end)
-    if not ok or not res or not res.Body then return nil end
-    local ok2, data = pcall(function()
-        return HttpService:JSONDecode(res.Body)
-    end)
-    if not ok2 or not data then return nil end
-    return data
+    for attempt = 1, 3 do
+        local ok, res = pcall(function()
+            return http({ Url = url, Method = "GET", Headers = { ["Accept"] = "application/json" } })
+        end)
+        if ok and res then
+            local body = res.Body or res.body
+            if type(body) == "string" and #body > 0 then
+                local ok2, data = pcall(function()
+                    return HttpService:JSONDecode(body)
+                end)
+                if ok2 and type(data) == "table" and data.data then
+                    return data
+                end
+            end
+        end
+        task.wait(0.4 * attempt)
+    end
+    return nil
 end
 
-local function scanPass(maxPlayers, maxPages)
-    local result = {}
+local function findBestServer()
+    local candidates = {}
     local cursor = ""
     local pages = 0
     local totalScanned = 0
 
-    while pages < maxPages do
+    while pages < 15 do
         local data = requestPage(cursor)
-        if not data or not data.data then break end
+        if not data or type(data.data) ~= "table" then break end
+
         local cnt = 0
         for _, s in ipairs(data.data) do
-            cnt = cnt + 1
-            totalScanned = totalScanned + 1
-            local pc = s.playing or 0
-            local id = s.id
-            if pc >= 1 and pc <= maxPlayers then
-                if id ~= JOB_ID and not Blacklist[id] then
-                    result[id] = {
+            if type(s) == "table" then
+                cnt = cnt + 1
+                totalScanned = totalScanned + 1
+                local pc = tonumber(s.playing) or 0
+                local id = s.id
+                if type(id) == "string" and id ~= JOB_ID
+                    and pc >= 1 and pc <= 2
+                    and not Blacklist[id] then
+                    table.insert(candidates, {
                         id = id,
-                        ping = s.ping or 999,
-                        fps = s.fps or 60,
                         playing = pc,
-                        max = s.maxPlayers or 12
-                    }
+                        ping = tonumber(s.ping) or 999,
+                        fps = tonumber(s.fps) or 60,
+                    })
                 end
             end
         end
+
         if cnt == 0 then break end
+
         cursor = data.nextPageCursor
         if not cursor or cursor == "" or cursor == "null" then break end
         pages = pages + 1
-        task.wait(0.02)
+
+        setInfo("Quét: " .. totalScanned .. " | Ứng viên: " .. #candidates)
+        task.wait(0.1)
     end
 
-    return result, totalScanned
+    if #candidates == 0 then return nil, totalScanned end
+
+    table.sort(candidates, function(a, b)
+        if a.playing ~= b.playing then return a.playing < b.playing end
+        if a.fps ~= b.fps then return a.fps < b.fps end
+        return a.ping > b.ping
+    end)
+
+    return candidates[1], totalScanned
 end
 
-local function calculateScore(server, stabilityBonus)
-    local playerScore = 0
-    if server.playing == 1 then
-        playerScore = 100
-    elseif server.playing == 2 then
-        playerScore = 40
-    elseif server.playing == 3 then
-        playerScore = 10
+local function teleport(target)
+    local sent = false
+    pcall(function()
+        local opts = Instance.new("TeleportOptions")
+        opts.ServerInstanceId = target.id
+        TeleportService:TeleportAsync(PLACE_ID, {LocalPlayer}, opts)
+        sent = true
+    end)
+    if not sent then
+        pcall(function()
+            TeleportService:TeleportToPlaceInstance(PLACE_ID, target.id, LocalPlayer)
+        end)
     end
-
-    local fpsScore = math.max(0, 60 - server.fps) * 1.5
-
-    local pingScore = math.min(server.ping, 500) / 5
-
-    local stabilityScore = stabilityBonus * 60
-
-    local total = playerScore + fpsScore + pingScore + stabilityScore
-    return total
 end
 
-function doHop()
-    if IsScanning then return end
-    IsScanning = true
-
-    startLoading("Đang dò server")
-    task.wait(0.1)
+-- ==== VÒNG LẶP CHÍNH ====
+local function mainLoop()
+    print("[AUTO HOP] Bắt đầu vòng lặp chính")
 
     if not http then
-        IsScanning = false
-        stopLoading("Lỗi kết nối!", Color3.fromRGB(255, 100, 100))
+        setStatus("Không có HTTP!", Color3.fromRGB(255, 100, 100))
+        setInfo("Executor không hỗ trợ HTTP")
+        print("[AUTO HOP] LỖI: Không có HTTP")
         return
     end
 
-    local pass1 = select(1, scanPass(2, 12))
+    task.wait(1)
+    setStatus("Bắt đầu tìm server...", Color3.fromRGB(255, 200, 100))
 
-    local count1 = 0
-    for _ in pairs(pass1) do count1 = count1 + 1 end
+    while true do
+        startSpin("Đang quét server")
+        setInfo("Đang quét...")
 
-    if count1 == 0 then
-        IsScanning = false
-        stopLoading("Không có server!", Color3.fromRGB(255, 100, 100))
-        return
-    end
+        local target, scanned = findBestServer()
 
-    startLoading("Đang phân tích")
-    task.wait(2.5)
+        if not target then
+            setStatus("Không có server 1-2 người", Color3.fromRGB(255, 150, 100))
+            setInfo("Đã quét: " .. tostring(scanned) .. " | Chờ 3s")
+            print("[AUTO HOP] Không tìm thấy. Đã quét:", scanned)
+            task.wait(3)
+        else
+            setStatus("Vào " .. target.playing .. " ng · FPS" .. target.fps .. " · P" .. target.ping,
+                Color3.fromRGB(120, 255, 160))
+            setInfo("Đã quét: " .. tostring(scanned) .. " | Đang teleport")
+            print("[AUTO HOP] Vào server:", target.playing, "người | FPS", target.fps, "| Ping", target.ping)
 
-    local pass2 = select(1, scanPass(2, 12))
+            task.wait(0.8)
+            Blacklist[target.id] = true
+            teleport(target)
 
-    local stable = {}
-    for id, s in pairs(pass2) do
-        if pass1[id] then
-            s.stability = 2
-            if s.playing == pass1[id].playing then
-                s.stability = 3
-            end
-            table.insert(stable, s)
+            -- Chờ teleport hoặc timeout
+            task.wait(10)
         end
-    end
-
-    if #stable == 0 then
-        for id, s in pairs(pass1) do
-            s.stability = 1
-            table.insert(stable, s)
-        end
-    end
-
-    startLoading("Đang xác nhận")
-    task.wait(1.5)
-
-    local finalPool = {}
-    for _, s in ipairs(stable) do
-        local total = calculateScore(s, s.stability)
-        s.score = total
-        table.insert(finalPool, s)
-    end
-
-    table.sort(finalPool, function(a, b)
-        return a.score > b.score
-    end)
-
-    local onePlayer = {}
-    for _, s in ipairs(finalPool) do
-        if s.playing == 1 then
-            table.insert(onePlayer, s)
-        end
-    end
-
-    local pickFrom = onePlayer
-    if #pickFrom == 0 then
-        pickFrom = finalPool
-    end
-
-    local topCount = math.min(3, #pickFrom)
-    if topCount == 0 then
-        IsScanning = false
-        stopLoading("Không có server!", Color3.fromRGB(255, 100, 100))
-        return
-    end
-
-    local target = pickFrom[math.random(1, topCount)]
-
-    startLoading("Đang vào server")
-    task.wait(0.5)
-
-    IsScanning = false
-    Blacklist[target.id] = true
-
-    local ok = pcall(function()
-        TeleportService:TeleportToPlaceInstance(PLACE_ID, target.id, LocalPlayer)
-    end)
-
-    if not ok then
-        stopLoading("Lỗi! Bấm lại.", Color3.fromRGB(255, 100, 100))
     end
 end
+
+-- Chạy vòng lặp
+task.spawn(mainLoop)
+
+print("[AUTO HOP] Đã khởi động xong")
