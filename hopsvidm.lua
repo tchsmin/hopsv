@@ -1,46 +1,33 @@
--- ============================================
--- AUTO HOP — Tự động tìm server 1-2 người
--- Không nút bấm, chạy liên tục
--- ============================================
-
 local Players = game:GetService("Players")
 local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
 local UserInputService = game:GetService("UserInputService")
-local RunService = game:GetService("RunService")
 
 local LocalPlayer = Players.LocalPlayer
 local PLACE_ID = game.PlaceId
 local JOB_ID = game.JobId
 
-print("[AUTO HOP] Bắt đầu khởi động...")
-print("[AUTO HOP] PlaceId:", PLACE_ID)
+local MIN_PLAYERS_TO_HOP = 3
+local MAX_PAGES = 15
 
--- ==== HTTP FUNCTION ====
 local function getHttp()
-    if syn and syn.request then return syn.request, "syn.request" end
-    if http_request then return http_request, "http_request" end
-    if request then return request, "request" end
-    if fluxus and fluxus.request then return fluxus.request, "fluxus.request" end
-    if krnl and krnl.request then return krnl.request, "krnl.request" end
-    if http and http.request then return http.request, "http.request" end
+    if syn and syn.request then return syn.request end
+    if http_request then return http_request end
+    if request then return request end
+    if fluxus and fluxus.request then return fluxus.request end
+    if krnl and krnl.request then return krnl.request end
+    if http and http.request then return http.request end
     if HttpGet then
-        return function(opts)
-            return { Body = HttpGet(opts.Url), StatusCode = 200 }
-        end, "HttpGet"
+        return function(opts) return { Body = HttpGet(opts.Url), StatusCode = 200 } end
     end
     if game.HttpGet then
-        return function(opts)
-            return { Body = game:HttpGet(opts.Url), StatusCode = 200 }
-        end, "game.HttpGet"
+        return function(opts) return { Body = game:HttpGet(opts.Url), StatusCode = 200 } end
     end
-    return nil, "NONE"
+    return nil
 end
 
-local http, httpName = getHttp()
-print("[AUTO HOP] HTTP method:", httpName)
+local http = getHttp()
 
--- ==== UI PARENT ====
 local function getUIParent()
     local ok, cg = pcall(function() return game:GetService("CoreGui") end)
     if ok and cg then
@@ -55,15 +42,12 @@ local function getUIParent()
 end
 
 local UIParent = getUIParent()
-print("[AUTO HOP] UI Parent:", UIParent and UIParent.Name or "nil")
 
--- ==== XOÁ UI CŨ ====
 pcall(function()
     local old = UIParent:FindFirstChild("AutoHopUI")
     if old then old:Destroy() end
 end)
 
--- ==== TẠO UI ====
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "AutoHopUI"
 ScreenGui.ResetOnSpawn = false
@@ -73,8 +57,8 @@ ScreenGui.DisplayOrder = 999999
 ScreenGui.Parent = UIParent
 
 local Main = Instance.new("Frame")
-Main.Size = UDim2.new(0, 240, 0, 90)
-Main.Position = UDim2.new(0, 20, 0.5, -45)
+Main.Size = UDim2.new(0, 260, 0, 100)
+Main.Position = UDim2.new(0, 20, 0.5, -50)
 Main.BackgroundColor3 = Color3.fromRGB(18, 20, 28)
 Main.BorderSizePixel = 0
 Main.Parent = ScreenGui
@@ -93,16 +77,27 @@ local TitleLabel = Instance.new("TextLabel")
 TitleLabel.Size = UDim2.new(1, -20, 0, 18)
 TitleLabel.Position = UDim2.new(0, 10, 0, 8)
 TitleLabel.BackgroundTransparency = 1
-TitleLabel.Text = "AUTO HOP · 1-2 NGƯỜI"
+TitleLabel.Text = "AUTO HOP"
 TitleLabel.TextColor3 = Color3.fromRGB(120, 255, 180)
 TitleLabel.Font = Enum.Font.GothamBold
 TitleLabel.TextSize = 11
 TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
 TitleLabel.Parent = Main
 
+local PlayerCountLabel = Instance.new("TextLabel")
+PlayerCountLabel.Size = UDim2.new(1, -20, 0, 18)
+PlayerCountLabel.Position = UDim2.new(0, 10, 0, 28)
+PlayerCountLabel.BackgroundTransparency = 1
+PlayerCountLabel.Text = "Server: 1 người"
+PlayerCountLabel.TextColor3 = Color3.fromRGB(140, 220, 180)
+PlayerCountLabel.Font = Enum.Font.Code
+PlayerCountLabel.TextSize = 10
+PlayerCountLabel.TextXAlignment = Enum.TextXAlignment.Left
+PlayerCountLabel.Parent = Main
+
 local StatusLabel = Instance.new("TextLabel")
 StatusLabel.Size = UDim2.new(1, -20, 0, 18)
-StatusLabel.Position = UDim2.new(0, 10, 0, 32)
+StatusLabel.Position = UDim2.new(0, 10, 0, 50)
 StatusLabel.BackgroundTransparency = 1
 StatusLabel.Text = "Đang khởi động..."
 StatusLabel.TextColor3 = Color3.fromRGB(200, 220, 255)
@@ -113,7 +108,7 @@ StatusLabel.Parent = Main
 
 local InfoLabel = Instance.new("TextLabel")
 InfoLabel.Size = UDim2.new(1, -20, 0, 18)
-InfoLabel.Position = UDim2.new(0, 10, 0, 54)
+InfoLabel.Position = UDim2.new(0, 10, 0, 72)
 InfoLabel.BackgroundTransparency = 1
 InfoLabel.Text = "Sẵn sàng"
 InfoLabel.TextColor3 = Color3.fromRGB(140, 180, 220)
@@ -122,9 +117,6 @@ InfoLabel.TextSize = 9
 InfoLabel.TextXAlignment = Enum.TextXAlignment.Left
 InfoLabel.Parent = Main
 
-print("[AUTO HOP] UI đã tạo")
-
--- ==== DRAG ====
 local dragStart, startPos, dragging
 
 TitleLabel.InputBegan:Connect(function(input)
@@ -154,7 +146,6 @@ UserInputService.InputEnded:Connect(function(input)
     end
 end)
 
--- ==== SPINNER ====
 local SPINNER = {"|", "/", "-", "\\"}
 local SpinActive = false
 local SpinThread = nil
@@ -182,11 +173,35 @@ local function setStatus(text, color)
     if color then StatusLabel.TextColor3 = color end
 end
 
-local function setInfo(text)
+local function setInfo(text, color)
     InfoLabel.Text = text
+    if color then InfoLabel.TextColor3 = color end
 end
 
--- ==== SCAN ====
+local function updatePlayerCount()
+    local count = #Players:GetPlayers()
+    PlayerCountLabel.Text = "Server: " .. count .. " người"
+    if count >= MIN_PLAYERS_TO_HOP then
+        PlayerCountLabel.TextColor3 = Color3.fromRGB(255, 150, 100)
+    elseif count == 2 then
+        PlayerCountLabel.TextColor3 = Color3.fromRGB(255, 220, 120)
+    else
+        PlayerCountLabel.TextColor3 = Color3.fromRGB(140, 220, 180)
+    end
+end
+
+Players.PlayerAdded:Connect(function()
+    task.wait(0.3)
+    updatePlayerCount()
+end)
+
+Players.PlayerRemoving:Connect(function()
+    task.wait(0.3)
+    updatePlayerCount()
+end)
+
+updatePlayerCount()
+
 local Blacklist = {}
 
 local function requestPage(cursor)
@@ -221,7 +236,7 @@ local function findBestServer()
     local pages = 0
     local totalScanned = 0
 
-    while pages < 15 do
+    while pages < MAX_PAGES do
         local data = requestPage(cursor)
         if not data or type(data.data) ~= "table" then break end
 
@@ -281,48 +296,45 @@ local function teleport(target)
     end
 end
 
--- ==== VÒNG LẶP CHÍNH ====
 local function mainLoop()
-    print("[AUTO HOP] Bắt đầu vòng lặp chính")
-
     if not http then
         setStatus("Không có HTTP!", Color3.fromRGB(255, 100, 100))
         setInfo("Executor không hỗ trợ HTTP")
-        print("[AUTO HOP] LỖI: Không có HTTP")
         return
     end
 
     task.wait(1)
-    setStatus("Bắt đầu tìm server...", Color3.fromRGB(255, 200, 100))
+    setStatus("Đang theo dõi...", Color3.fromRGB(180, 200, 255))
 
     while true do
-        startSpin("Đang quét server")
-        setInfo("Đang quét...")
+        local count = #Players:GetPlayers()
+        updatePlayerCount()
 
-        local target, scanned = findBestServer()
-
-        if not target then
-            setStatus("Không có server 1-2 người", Color3.fromRGB(255, 150, 100))
-            setInfo("Đã quét: " .. tostring(scanned) .. " | Chờ 3s")
-            print("[AUTO HOP] Không tìm thấy. Đã quét:", scanned)
-            task.wait(3)
+        if count < MIN_PLAYERS_TO_HOP then
+            setStatus("Chờ server ≥ " .. MIN_PLAYERS_TO_HOP .. " người (" .. count .. ")", Color3.fromRGB(140, 200, 255))
+            setInfo("Chưa đủ điều kiện hop")
+            task.wait(1)
         else
-            setStatus("Vào " .. target.playing .. " ng · FPS" .. target.fps .. " · P" .. target.ping,
-                Color3.fromRGB(120, 255, 160))
-            setInfo("Đã quét: " .. tostring(scanned) .. " | Đang teleport")
-            print("[AUTO HOP] Vào server:", target.playing, "người | FPS", target.fps, "| Ping", target.ping)
+            startSpin("Đang quét server")
+            setInfo("Đang tìm server 1-2 người...")
 
-            task.wait(0.8)
-            Blacklist[target.id] = true
-            teleport(target)
+            local target, scanned = findBestServer()
 
-            -- Chờ teleport hoặc timeout
-            task.wait(10)
+            if not target then
+                setStatus("Không có server 1-2 người", Color3.fromRGB(255, 150, 100))
+                setInfo("Đã quét: " .. tostring(scanned) .. " | Chờ 3s")
+                task.wait(3)
+            else
+                setStatus("Vào " .. target.playing .. " ng · FPS" .. target.fps .. " · P" .. target.ping,
+                    Color3.fromRGB(120, 255, 160))
+                setInfo("Đã quét: " .. tostring(scanned) .. " | Đang teleport")
+                task.wait(0.8)
+                Blacklist[target.id] = true
+                teleport(target)
+                task.wait(10)
+            end
         end
     end
 end
 
--- Chạy vòng lặp
 task.spawn(mainLoop)
-
-print("[AUTO HOP] Đã khởi động xong")
