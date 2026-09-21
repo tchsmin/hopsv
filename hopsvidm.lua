@@ -25,7 +25,7 @@ local loaderCoroutine = nil
 if CoreGui:FindFirstChild("HopUI") then CoreGui.HopUI:Destroy() end
 
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "HopUI"
+ScreenGui.Name = "Hop server UI"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 ScreenGui.IgnoreGuiInset = true
