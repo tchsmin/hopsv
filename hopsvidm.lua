@@ -181,9 +181,9 @@ end
 local function updatePlayerCount()
     local count = #Players:GetPlayers()
     PlayerCountLabel.Text = "Server: " .. count .. " người"
-    if count >= MIN_PLAYERS_TO_HOP then
+    if count > MIN_PLAYERS_TO_HOP then
         PlayerCountLabel.TextColor3 = Color3.fromRGB(255, 150, 100)
-    elseif count == 2 then
+    elseif count == MIN_PLAYERS_TO_HOP then
         PlayerCountLabel.TextColor3 = Color3.fromRGB(255, 220, 120)
     else
         PlayerCountLabel.TextColor3 = Color3.fromRGB(140, 220, 180)
@@ -310,8 +310,8 @@ local function mainLoop()
         local count = #Players:GetPlayers()
         updatePlayerCount()
 
-        if count < MIN_PLAYERS_TO_HOP then
-            setStatus("Chờ server ≥ " .. MIN_PLAYERS_TO_HOP .. " người (" .. count .. ")", Color3.fromRGB(140, 200, 255))
+        if count <= MIN_PLAYERS_TO_HOP then
+            setStatus("Chờ server > " .. MIN_PLAYERS_TO_HOP .. " người (" .. count .. ")", Color3.fromRGB(140, 200, 255))
             setInfo("Chưa đủ điều kiện hop")
             task.wait(1)
         else
