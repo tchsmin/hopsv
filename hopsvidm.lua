@@ -7,7 +7,7 @@ local LocalPlayer = Players.LocalPlayer
 local PLACE_ID = game.PlaceId
 local JOB_ID = game.JobId
 
-local MIN_PLAYERS_TO_HOP = 3
+local MIN_TOTAL_TO_HOP = 3
 local MAX_PAGES = 15
 
 local function getHttp()
@@ -77,7 +77,7 @@ local TitleLabel = Instance.new("TextLabel")
 TitleLabel.Size = UDim2.new(1, -20, 0, 18)
 TitleLabel.Position = UDim2.new(0, 10, 0, 8)
 TitleLabel.BackgroundTransparency = 1
-TitleLabel.Text = "AUTO HOP"
+TitleLabel.Text = "AUTO HOP · TÌM SERVER 1 NGƯỜI"
 TitleLabel.TextColor3 = Color3.fromRGB(120, 255, 180)
 TitleLabel.Font = Enum.Font.GothamBold
 TitleLabel.TextSize = 11
@@ -88,7 +88,7 @@ local PlayerCountLabel = Instance.new("TextLabel")
 PlayerCountLabel.Size = UDim2.new(1, -20, 0, 18)
 PlayerCountLabel.Position = UDim2.new(0, 10, 0, 28)
 PlayerCountLabel.BackgroundTransparency = 1
-PlayerCountLabel.Text = "Server: 1 người"
+PlayerCountLabel.Text = "Server: 1 người (0 khác)"
 PlayerCountLabel.TextColor3 = Color3.fromRGB(140, 220, 180)
 PlayerCountLabel.Font = Enum.Font.Code
 PlayerCountLabel.TextSize = 10
@@ -178,12 +178,22 @@ local function setInfo(text, color)
     if color then InfoLabel.TextColor3 = color end
 end
 
+local function getTotalPlayers()
+    return #Players:GetPlayers()
+end
+
+local function getOthers()
+    return getTotalPlayers() - 1
+end
+
 local function updatePlayerCount()
-    local count = #Players:GetPlayers()
-    PlayerCountLabel.Text = "Server: " .. count .. " người"
-    if count > MIN_PLAYERS_TO_HOP then
+    local total = getTotalPlayers()
+    local others = getOthers()
+    PlayerCountLabel.Text = "Server: " .. total .. " người (" .. others .. " khác)"
+
+    if total >= MIN_TOTAL_TO_HOP then
         PlayerCountLabel.TextColor3 = Color3.fromRGB(255, 150, 100)
-    elseif count == MIN_PLAYERS_TO_HOP then
+    elseif total == 2 then
         PlayerCountLabel.TextColor3 = Color3.fromRGB(255, 220, 120)
     else
         PlayerCountLabel.TextColor3 = Color3.fromRGB(140, 220, 180)
@@ -230,7 +240,7 @@ local function requestPage(cursor)
     return nil
 end
 
-local function findBestServer()
+local function findOnePlayerServer()
     local candidates = {}
     local cursor = ""
     local pages = 0
@@ -248,7 +258,7 @@ local function findBestServer()
                 local pc = tonumber(s.playing) or 0
                 local id = s.id
                 if type(id) == "string" and id ~= JOB_ID
-                    and pc >= 1 and pc <= 2
+                    and pc == 1
                     and not Blacklist[id] then
                     table.insert(candidates, {
                         id = id,
@@ -266,14 +276,13 @@ local function findBestServer()
         if not cursor or cursor == "" or cursor == "null" then break end
         pages = pages + 1
 
-        setInfo("Quét: " .. totalScanned .. " | Ứng viên: " .. #candidates)
+        setInfo("Quét: " .. totalScanned .. " | Ứng viên 1 người: " .. #candidates)
         task.wait(0.1)
     end
 
     if #candidates == 0 then return nil, totalScanned end
 
     table.sort(candidates, function(a, b)
-        if a.playing ~= b.playing then return a.playing < b.playing end
         if a.fps ~= b.fps then return a.fps < b.fps end
         return a.ping > b.ping
     end)
@@ -307,25 +316,26 @@ local function mainLoop()
     setStatus("Đang theo dõi...", Color3.fromRGB(180, 200, 255))
 
     while true do
-        local count = #Players:GetPlayers()
+        local total = getTotalPlayers()
+        local others = getOthers()
         updatePlayerCount()
 
-        if count <= MIN_PLAYERS_TO_HOP then
-            setStatus("Chờ server > " .. MIN_PLAYERS_TO_HOP .. " người (" .. count .. ")", Color3.fromRGB(140, 200, 255))
-            setInfo("Chưa đủ điều kiện hop")
+        if total < MIN_TOTAL_TO_HOP then
+            setStatus("Chờ đủ " .. MIN_TOTAL_TO_HOP .. " người (" .. total .. "/" .. MIN_TOTAL_TO_HOP .. ")", Color3.fromRGB(140, 200, 255))
+            setInfo("Cần " .. (MIN_TOTAL_TO_HOP - 1) .. " người khác · hiện có " .. others)
             task.wait(1)
         else
-            startSpin("Đang quét server")
-            setInfo("Đang tìm server 1-2 người...")
+            startSpin("Đang tìm server 1 người")
+            setInfo("Server có " .. others .. " khác · Đang quét server 1 người")
 
-            local target, scanned = findBestServer()
+            local target, scanned = findOnePlayerServer()
 
             if not target then
-                setStatus("Không có server 1-2 người", Color3.fromRGB(255, 150, 100))
+                setStatus("Không có server 1 người", Color3.fromRGB(255, 150, 100))
                 setInfo("Đã quét: " .. tostring(scanned) .. " | Chờ 3s")
                 task.wait(3)
             else
-                setStatus("Vào " .. target.playing .. " ng · FPS" .. target.fps .. " · P" .. target.ping,
+                setStatus("Vào server 1 người · FPS" .. target.fps .. " · P" .. target.ping,
                     Color3.fromRGB(120, 255, 160))
                 setInfo("Đã quét: " .. tostring(scanned) .. " | Đang teleport")
                 task.wait(0.8)
