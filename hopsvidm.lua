@@ -1,103 +1,67 @@
 local Players = game:GetService("Players")
 local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
-local UserInputService = game:GetService("UserInputService")
+local CoreGui = game:GetService("CoreGui")
 
 local LocalPlayer = Players.LocalPlayer
 local PLACE_ID = game.PlaceId
 local JOB_ID = game.JobId
 
-local MIN_TOTAL_TO_HOP = 2
-local MAX_PAGES = 15
-
 local function getHttp()
-    if syn and syn.request then return syn.request end
     if http_request then return http_request end
     if request then return request end
+    if syn and syn.request then return syn.request end
     if fluxus and fluxus.request then return fluxus.request end
-    if krnl and krnl.request then return krnl.request end
-    if http and http.request then return http.request end
-    if HttpGet then
-        return function(opts) return { Body = HttpGet(opts.Url), StatusCode = 200 } end
-    end
-    if game.HttpGet then
-        return function(opts) return { Body = game:HttpGet(opts.Url), StatusCode = 200 } end
-    end
     return nil
 end
-
 local http = getHttp()
 
-local function getUIParent()
-    local ok, cg = pcall(function() return game:GetService("CoreGui") end)
-    if ok and cg then
-        local ok2 = pcall(function() return cg:FindFirstChild("RobloxGui") end)
-        if ok2 then return cg end
-    end
-    if gethui then
-        local ok3, hui = pcall(gethui)
-        if ok3 and hui then return hui end
-    end
-    return LocalPlayer:WaitForChild("PlayerGui")
-end
+-- ==== CONFIG ====
+local CONFIG = {
+    MinPlayers = 1,        -- Số người tối thiểu
+    MaxPlayers = 1,        -- Số người tối đa (ưu tiên server 1 người)
+    MaxPages = 15,
+    ScanInterval = 3,      -- Giây giữa các lần scan khi đang ở server ổn
+    RehopDelay = 8,        -- Giây chờ trước khi hop khi có người vào
+}
 
-local UIParent = getUIParent()
+-- ==== BLACKLIST ====
+local Blacklist = {}
+local IsRunning = true
+local IsHopping = false
+local CurrentState = "idle"
 
-pcall(function()
-    local old = UIParent:FindFirstChild("AutoHopUI")
-    if old then old:Destroy() end
-end)
+if CoreGui:FindFirstChild("AutoHopUI") then CoreGui.AutoHopUI:Destroy() end
 
+-- ==== UI ====
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "AutoHopUI"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 ScreenGui.IgnoreGuiInset = true
 ScreenGui.DisplayOrder = 999999
-ScreenGui.Parent = UIParent
+ScreenGui.Parent = CoreGui
 
 local Main = Instance.new("Frame")
-Main.Size = UDim2.new(0, 260, 0, 100)
-Main.Position = UDim2.new(0, 20, 0.5, -50)
+Main.Size = UDim2.new(0, 180, 0, 50)
+Main.Position = UDim2.new(0, 20, 0.5, -25)
 Main.BackgroundColor3 = Color3.fromRGB(18, 20, 28)
 Main.BorderSizePixel = 0
 Main.Parent = ScreenGui
 
 local MainCorner = Instance.new("UICorner")
-MainCorner.CornerRadius = UDim.new(0, 10)
+MainCorner.CornerRadius = UDim.new(0, 8)
 MainCorner.Parent = Main
 
 local Stroke = Instance.new("UIStroke")
-Stroke.Color = Color3.fromRGB(60, 200, 130)
-Stroke.Thickness = 1.5
-Stroke.Transparency = 0.3
+Stroke.Color = Color3.fromRGB(60, 180, 120)
+Stroke.Thickness = 1
+Stroke.Transparency = 0.4
 Stroke.Parent = Main
 
-local TitleLabel = Instance.new("TextLabel")
-TitleLabel.Size = UDim2.new(1, -20, 0, 18)
-TitleLabel.Position = UDim2.new(0, 10, 0, 8)
-TitleLabel.BackgroundTransparency = 1
-TitleLabel.Text = "AUTO HOP · SERVER 1 NGƯỜI"
-TitleLabel.TextColor3 = Color3.fromRGB(120, 255, 180)
-TitleLabel.Font = Enum.Font.GothamBold
-TitleLabel.TextSize = 11
-TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
-TitleLabel.Parent = Main
-
-local PlayerCountLabel = Instance.new("TextLabel")
-PlayerCountLabel.Size = UDim2.new(1, -20, 0, 18)
-PlayerCountLabel.Position = UDim2.new(0, 10, 0, 28)
-PlayerCountLabel.BackgroundTransparency = 1
-PlayerCountLabel.Text = "Server: 1 người"
-PlayerCountLabel.TextColor3 = Color3.fromRGB(140, 220, 180)
-PlayerCountLabel.Font = Enum.Font.Code
-PlayerCountLabel.TextSize = 10
-PlayerCountLabel.TextXAlignment = Enum.TextXAlignment.Left
-PlayerCountLabel.Parent = Main
-
 local StatusLabel = Instance.new("TextLabel")
-StatusLabel.Size = UDim2.new(1, -20, 0, 18)
-StatusLabel.Position = UDim2.new(0, 10, 0, 50)
+StatusLabel.Size = UDim2.new(1, -16, 0, 16)
+StatusLabel.Position = UDim2.new(0, 8, 0, 8)
 StatusLabel.BackgroundTransparency = 1
 StatusLabel.Text = "Đang khởi động..."
 StatusLabel.TextColor3 = Color3.fromRGB(200, 220, 255)
@@ -107,19 +71,305 @@ StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
 StatusLabel.Parent = Main
 
 local InfoLabel = Instance.new("TextLabel")
-InfoLabel.Size = UDim2.new(1, -20, 0, 18)
-InfoLabel.Position = UDim2.new(0, 10, 0, 72)
+InfoLabel.Size = UDim2.new(1, -16, 0, 16)
+InfoLabel.Position = UDim2.new(0, 8, 0, 26)
 InfoLabel.BackgroundTransparency = 1
-InfoLabel.Text = "Sẵn sàng"
+InfoLabel.Text = "0 người · chờ"
 InfoLabel.TextColor3 = Color3.fromRGB(140, 180, 220)
 InfoLabel.Font = Enum.Font.Code
-InfoLabel.TextSize = 9
+InfoLabel.TextSize = 10
 InfoLabel.TextXAlignment = Enum.TextXAlignment.Left
 InfoLabel.Parent = Main
 
-local dragStart, startPos, dragging
+local Dot = Instance.new("Frame")
+Dot.Size = UDim2.new(0, 6, 0, 6)
+Dot.Position = UDim2.new(1, -14, 0, 10)
+Dot.BackgroundColor3 = Color3.fromRGB(60, 200, 100)
+Dot.BorderSizePixel = 0
+Dot.Parent = Main
 
-TitleLabel.InputBegan:Connect(function(input)
+local DotCorner = Instance.new("UICorner")
+DotCorner.CornerRadius = UDim.new(1, 0)
+DotCorner.Parent = Dot
+
+-- ==== UI HELPERS ====
+local SPINNER = {"|", "/", "-", "\\"}
+local spinIndex = 1
+
+local function setStatus(text, color)
+    StatusLabel.Text = text
+    StatusLabel.TextColor3 = color or Color3.fromRGB(200, 220, 255)
+end
+
+local function setInfo(text, color)
+    InfoLabel.Text = text
+    InfoLabel.TextColor3 = color or Color3.fromRGB(140, 180, 220)
+end
+
+local function setDotState(state)
+    if state == "active" then
+        Dot.BackgroundColor3 = Color3.fromRGB(60, 200, 100)
+        Stroke.Color = Color3.fromRGB(60, 180, 120)
+    elseif state == "scanning" then
+        Dot.BackgroundColor3 = Color3.fromRGB(255, 200, 100)
+        Stroke.Color = Color3.fromRGB(255, 180, 100)
+    elseif state == "hopping" then
+        Dot.BackgroundColor3 = Color3.fromRGB(255, 140, 60)
+        Stroke.Color = Color3.fromRGB(255, 140, 60)
+    elseif state == "error" then
+        Dot.BackgroundColor3 = Color3.fromRGB(255, 100, 100)
+        Stroke.Color = Color3.fromRGB(200, 60, 60)
+    end
+end
+
+-- Spinner animation
+task.spawn(function()
+    while ScreenGui.Parent and IsRunning do
+        spinIndex = spinIndex + 1
+        if spinIndex > #SPINNER then spinIndex = 1 end
+        local spin = SPINNER[spinIndex]
+        if CurrentState == "scanning" then
+            StatusLabel.Text = "Đang tìm server " .. spin
+        end
+        task.wait(0.15)
+    end
+end)
+
+-- Player count update
+local function updatePlayerCount()
+    local count = #Players:GetPlayers()
+    setInfo(count .. " người trong server", 
+        count <= 1 and Color3.fromRGB(120, 255, 160) 
+        or count == 2 and Color3.fromRGB(255, 220, 120) 
+        or Color3.fromRGB(255, 120, 120))
+    return count
+end
+
+Players.PlayerAdded:Connect(function() task.wait(0.3) updatePlayerCount() end)
+Players.PlayerRemoving:Connect(function() task.wait(0.5) updatePlayerCount() end)
+
+-- ==== SCAN ====
+local function scanServers()
+    if not http then
+        setStatus("Không có HTTP", Color3.fromRGB(255, 100, 100))
+        setDotState("error")
+        return {}
+    end
+
+    local candidates = {}
+    local cursor = ""
+    local pages = 0
+
+    while pages < CONFIG.MaxPages do
+        local url = string.format(
+            "https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100&cursor=%s",
+            PLACE_ID, cursor or ""
+        )
+        local ok, res = pcall(function()
+            return http({ Url = url, Method = "GET", Headers = { ["Accept"] = "application/json" } })
+        end)
+        if not ok or not res then break end
+        local body = res.Body or res.body
+        if type(body) ~= "string" then break end
+        local ok2, data = pcall(function()
+            return HttpService:JSONDecode(body)
+        end)
+        if not ok2 or type(data) ~= "table" then break end
+        if type(data.data) ~= "table" then break end
+
+        local cnt = 0
+        for _, s in ipairs(data.data) do
+            cnt = cnt + 1
+            local pc = tonumber(s.playing) or 0
+            local id = s.id
+            if type(id) == "string" and id ~= JOB_ID and not Blacklist[id] then
+                if pc >= CONFIG.MinPlayers and pc <= CONFIG.MaxPlayers then
+                    table.insert(candidates, {
+                        id = id,
+                        playing = pc,
+                        ping = tonumber(s.ping) or 999,
+                        fps = tonumber(s.fps) or 60,
+                    })
+                end
+            end
+        end
+        if cnt == 0 then break end
+
+        cursor = data.nextPageCursor
+        if not cursor or cursor == "" or cursor == "null" then break end
+        pages = pages + 1
+        task.wait(0.05)
+    end
+
+    -- Sort: ưu tiên số người ít → FPS thấp → ping cao
+    table.sort(candidates, function(a, b)
+        if a.playing ~= b.playing then return a.playing < b.playing end
+        if a.fps ~= b.fps then return a.fps < b.fps end
+        return a.ping > b.ping
+    end)
+
+    return candidates
+end
+
+-- ==== HOP ====
+local function hopTo(target)
+    if IsHopping then return false end
+    IsHopping = true
+    CurrentState = "hopping"
+    setDotState("hopping")
+    setStatus("Đang vào server...", Color3.fromRGB(255, 180, 100))
+
+    local success = false
+    pcall(function()
+        local opts = Instance.new("TeleportOptions")
+        opts.ServerInstanceId = target.id
+        TeleportService:TeleportAsync(PLACE_ID, {LocalPlayer}, opts)
+        success = true
+    end)
+    if not success then
+        pcall(function()
+            TeleportService:TeleportToPlaceInstance(PLACE_ID, target.id, LocalPlayer)
+            success = true
+        end)
+    end
+
+    if success then
+        Blacklist[target.id] = true
+    end
+
+    task.wait(3)
+    IsHopping = false
+    return success
+end
+
+-- ==== MAIN LOOP ====
+local function mainLoop()
+    task.wait(1)
+
+    while IsRunning and ScreenGui.Parent do
+        local count = updatePlayerCount()
+
+        -- Nếu đang ở server 1 người → ổn định, chỉ chờ
+        if count <= 1 then
+            CurrentState = "stable"
+            setDotState("active")
+            setStatus("Server 1 người ✓", Color3.fromRGB(120, 255, 160))
+
+            -- Chờ và theo dõi liên tục
+            for _ = 1, CONFIG.ScanInterval do
+                if not ScreenGui.Parent then return end
+                task.wait(1)
+                local c = #Players:GetPlayers()
+                updatePlayerCount()
+                if c > 1 then
+                    -- Có người vào → chuẩn bị hop
+                    setStatus("Có người vào · chờ " .. CONFIG.RehopDelay .. "s", 
+                        Color3.fromRGB(255, 180, 100))
+                    setDotState("scanning")
+
+                    for i = CONFIG.RehopDelay, 1, -1 do
+                        if not ScreenGui.Parent then return end
+                        local cnt = #Players:GetPlayers()
+                        if cnt <= 1 then
+                            setStatus("Người đó đã rời ✓", Color3.fromRGB(120, 255, 160))
+                            setDotState("active")
+                            break
+                        end
+                        setStatus("Hop sau " .. i .. "s · " .. cnt .. " người", 
+                            Color3.fromRGB(255, 180, 100))
+                        task.wait(1)
+                    end
+
+                    -- Sau delay, nếu vẫn có người → hop
+                    if #Players:GetPlayers() > 1 then
+                        count = 999  -- force re-scan below
+                    else
+                        count = 1
+                    end
+                    break
+                end
+            end
+
+            if count <= 1 then
+                -- Vẫn ổn → tiếp tục loop
+                continue
+            end
+        end
+
+        -- Cần tìm server mới
+        CurrentState = "scanning"
+        setDotState("scanning")
+        setStatus("Đang tìm server...", Color3.fromRGB(255, 200, 100))
+
+        local candidates = scanServers()
+
+        if #candidates == 0 then
+            setStatus("Không có server 1 người", Color3.fromRGB(255, 100, 100))
+            setDotState("error")
+            setInfo("Chờ 5s rồi thử lại...", Color3.fromRGB(255, 150, 150))
+            task.wait(5)
+            -- Reset blacklist sau vài lần thất bại
+            local blCount = 0
+            for _ in pairs(Blacklist) do blCount = blCount + 1 end
+            if blCount > 50 then
+                Blacklist = {}
+            end
+        else
+            local target = candidates[1]
+            setInfo(
+                target.playing .. " người · FPS" .. target.fps .. " · P" .. target.ping,
+                Color3.fromRGB(120, 255, 160)
+            )
+            task.wait(0.3)
+            hopTo(target)
+            task.wait(2)
+        end
+    end
+end
+
+-- ==== AUTO MONITOR (re-hook khi đang ở server 1 người) ====
+task.spawn(function()
+    while IsRunning and ScreenGui.Parent do
+        task.wait(1)
+        if not IsHopping then
+            local count = #Players:GetPlayers()
+            if count > 1 and CurrentState == "stable" then
+                -- Trigger rehop
+                task.spawn(function()
+                    setStatus("Có người vào · chờ " .. CONFIG.RehopDelay .. "s", 
+                        Color3.fromRGB(255, 180, 100))
+                    setDotState("scanning")
+
+                    for i = CONFIG.RehopDelay, 1, -1 do
+                        if not ScreenGui.Parent then return end
+                        local cnt = #Players:GetPlayers()
+                        if cnt <= 1 then
+                            setStatus("Người đó đã rời ✓", Color3.fromRGB(120, 255, 160))
+                            setDotState("active")
+                            return
+                        end
+                        setStatus("Hop sau " .. i .. "s · " .. cnt .. " người", 
+                            Color3.fromRGB(255, 180, 100))
+                        task.wait(1)
+                    end
+
+                    if #Players:GetPlayers() > 1 then
+                        local candidates = scanServers()
+                        if #candidates > 0 then
+                            hopTo(candidates[1])
+                        end
+                    end
+                end)
+            end
+        end
+    end
+end)
+
+-- ==== DRAG UI ====
+local UserInputService = game:GetService("UserInputService")
+local dragging, dragStart, startPos
+
+Main.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1
         or input.UserInputType == Enum.UserInputType.Touch then
         dragging = true
@@ -146,197 +396,11 @@ UserInputService.InputEnded:Connect(function(input)
     end
 end)
 
-local SPINNER = {"|", "/", "-", "\\"}
-local SpinActive = false
-local SpinThread = nil
-local BaseText = ""
-
-local function startSpin(text)
-    BaseText = text
-    if SpinThread then pcall(function() task.cancel(SpinThread) end) end
-    SpinActive = true
-    SpinThread = task.spawn(function()
-        local i = 1
-        while SpinActive do
-            StatusLabel.Text = BaseText .. " " .. SPINNER[i]
-            i = i + 1
-            if i > #SPINNER then i = 1 end
-            task.wait(0.15)
-        end
-    end)
-end
-
-local function setStatus(text, color)
-    SpinActive = false
-    if SpinThread then pcall(function() task.cancel(SpinThread) end) end
-    StatusLabel.Text = text
-    if color then StatusLabel.TextColor3 = color end
-end
-
-local function setInfo(text, color)
-    InfoLabel.Text = text
-    if color then InfoLabel.TextColor3 = color end
-end
-
-local function getTotalPlayers()
-    return #Players:GetPlayers()
-end
-
-local function updatePlayerCount()
-    local total = getTotalPlayers()
-    PlayerCountLabel.Text = "Server: " .. total .. " người"
-
-    if total >= MIN_TOTAL_TO_HOP then
-        PlayerCountLabel.TextColor3 = Color3.fromRGB(255, 150, 100)
-    else
-        PlayerCountLabel.TextColor3 = Color3.fromRGB(140, 220, 180)
-    end
-end
-
-Players.PlayerAdded:Connect(function()
-    task.wait(0.3)
-    updatePlayerCount()
-end)
-
-Players.PlayerRemoving:Connect(function()
-    task.wait(0.3)
-    updatePlayerCount()
-end)
-
+-- ==== START ====
+setStatus("Khởi động...", Color3.fromRGB(255, 200, 100))
+setDotState("scanning")
 updatePlayerCount()
 
-local Blacklist = {}
-
-local function requestPage(cursor)
-    if not http then return nil end
-    local url = string.format(
-        "https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100&cursor=%s",
-        PLACE_ID, cursor or ""
-    )
-    for attempt = 1, 3 do
-        local ok, res = pcall(function()
-            return http({ Url = url, Method = "GET", Headers = { ["Accept"] = "application/json" } })
-        end)
-        if ok and res then
-            local body = res.Body or res.body
-            if type(body) == "string" and #body > 0 then
-                local ok2, data = pcall(function()
-                    return HttpService:JSONDecode(body)
-                end)
-                if ok2 and type(data) == "table" and data.data then
-                    return data
-                end
-            end
-        end
-        task.wait(0.4 * attempt)
-    end
-    return nil
-end
-
-local function findOnePlayerServer()
-    local candidates = {}
-    local cursor = ""
-    local pages = 0
-    local totalScanned = 0
-
-    while pages < MAX_PAGES do
-        local data = requestPage(cursor)
-        if not data or type(data.data) ~= "table" then break end
-
-        local cnt = 0
-        for _, s in ipairs(data.data) do
-            if type(s) == "table" then
-                cnt = cnt + 1
-                totalScanned = totalScanned + 1
-                local pc = tonumber(s.playing) or 0
-                local id = s.id
-                if type(id) == "string" and id ~= JOB_ID
-                    and pc == 1
-                    and not Blacklist[id] then
-                    table.insert(candidates, {
-                        id = id,
-                        playing = pc,
-                        ping = tonumber(s.ping) or 999,
-                        fps = tonumber(s.fps) or 60,
-                    })
-                end
-            end
-        end
-
-        if cnt == 0 then break end
-
-        cursor = data.nextPageCursor
-        if not cursor or cursor == "" or cursor == "null" then break end
-        pages = pages + 1
-
-        setInfo("Quét: " .. totalScanned .. " | Ứng viên: " .. #candidates)
-        task.wait(0.1)
-    end
-
-    if #candidates == 0 then return nil, totalScanned end
-
-    table.sort(candidates, function(a, b)
-        if a.fps ~= b.fps then return a.fps < b.fps end
-        return a.ping > b.ping
-    end)
-
-    return candidates[1], totalScanned
-end
-
-local function teleport(target)
-    local sent = false
-    pcall(function()
-        local opts = Instance.new("TeleportOptions")
-        opts.ServerInstanceId = target.id
-        TeleportService:TeleportAsync(PLACE_ID, {LocalPlayer}, opts)
-        sent = true
-    end)
-    if not sent then
-        pcall(function()
-            TeleportService:TeleportToPlaceInstance(PLACE_ID, target.id, LocalPlayer)
-        end)
-    end
-end
-
-local function mainLoop()
-    if not http then
-        setStatus("Không có HTTP!", Color3.fromRGB(255, 100, 100))
-        setInfo("Executor không hỗ trợ HTTP")
-        return
-    end
-
-    task.wait(1)
-    setStatus("Đang theo dõi...", Color3.fromRGB(180, 200, 255))
-
-    while true do
-        local total = getTotalPlayers()
-        updatePlayerCount()
-
-        if total < MIN_TOTAL_TO_HOP then
-            setStatus("Chờ server " .. MIN_TOTAL_TO_HOP .. " người (" .. total .. "/" .. MIN_TOTAL_TO_HOP .. ")", Color3.fromRGB(140, 200, 255))
-            setInfo("Cần server có " .. (MIN_TOTAL_TO_HOP - 1) .. " người khác")
-            task.wait(1)
-        else
-            startSpin("Đang tìm server 1 người")
-            setInfo("Server có " .. total .. " người · Đang tìm server 1 người")
-
-            local target, scanned = findOnePlayerServer()
-
-            if not target then
-                setStatus("Không có server 1 người", Color3.fromRGB(255, 150, 100))
-                setInfo("Đã quét: " .. tostring(scanned) .. " | Chờ 3s")
-                task.wait(3)
-            else
-                setStatus("Vào server 1 người · FPS" .. target.fps .. " · P" .. target.ping,
-                    Color3.fromRGB(120, 255, 160))
-                setInfo("Đã quét: " .. tostring(scanned) .. " | Đang teleport")
-                task.wait(0.8)
-                Blacklist[target.id] = true
-                teleport(target)
-                task.wait(10)
-            end
-        end
-    end
-end
-
 task.spawn(mainLoop)
+
+print("[AUTO HOP] Đang chạy liên tục | Tìm server 1 người")
