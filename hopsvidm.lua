@@ -1,23 +1,52 @@
 local Players = game:GetService("Players")
 local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
-local CoreGui = game:GetService("CoreGui")
+local UserInputService = game:GetService("UserInputService")
 
 local LocalPlayer = Players.LocalPlayer
 local PLACE_ID = game.PlaceId
 local JOB_ID = game.JobId
 
+local MIN_PLAYERS_TO_HOP = 3
+local MAX_PAGES = 15
+
 local function getHttp()
+    if syn and syn.request then return syn.request end
     if http_request then return http_request end
     if request then return request end
-    if syn and syn.request then return syn.request end
     if fluxus and fluxus.request then return fluxus.request end
+    if krnl and krnl.request then return krnl.request end
+    if http and http.request then return http.request end
+    if HttpGet then
+        return function(opts) return { Body = HttpGet(opts.Url), StatusCode = 200 } end
+    end
+    if game.HttpGet then
+        return function(opts) return { Body = game:HttpGet(opts.Url), StatusCode = 200 } end
+    end
     return nil
 end
+
 local http = getHttp()
 
--- ==== XOÁ UI CŨ ====
-if CoreGui:FindFirstChild("AutoHopUI") then CoreGui.AutoHopUI:Destroy() end
+local function getUIParent()
+    local ok, cg = pcall(function() return game:GetService("CoreGui") end)
+    if ok and cg then
+        local ok2 = pcall(function() return cg:FindFirstChild("RobloxGui") end)
+        if ok2 then return cg end
+    end
+    if gethui then
+        local ok3, hui = pcall(gethui)
+        if ok3 and hui then return hui end
+    end
+    return LocalPlayer:WaitForChild("PlayerGui")
+end
+
+local UIParent = getUIParent()
+
+pcall(function()
+    local old = UIParent:FindFirstChild("AutoHopUI")
+    if old then old:Destroy() end
+end)
 
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "AutoHopUI"
@@ -25,12 +54,11 @@ ScreenGui.ResetOnSpawn = false
 ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 ScreenGui.IgnoreGuiInset = true
 ScreenGui.DisplayOrder = 999999
-ScreenGui.Parent = CoreGui
+ScreenGui.Parent = UIParent
 
--- ==== UI ====
 local Main = Instance.new("Frame")
-Main.Size = UDim2.new(0, 220, 0, 80)
-Main.Position = UDim2.new(0, 20, 0.5, -40)
+Main.Size = UDim2.new(0, 260, 0, 100)
+Main.Position = UDim2.new(0, 20, 0.5, -50)
 Main.BackgroundColor3 = Color3.fromRGB(18, 20, 28)
 Main.BorderSizePixel = 0
 Main.Parent = ScreenGui
@@ -46,19 +74,30 @@ Stroke.Transparency = 0.3
 Stroke.Parent = Main
 
 local TitleLabel = Instance.new("TextLabel")
-TitleLabel.Size = UDim2.new(1, -20, 0, 20)
+TitleLabel.Size = UDim2.new(1, -20, 0, 18)
 TitleLabel.Position = UDim2.new(0, 10, 0, 8)
 TitleLabel.BackgroundTransparency = 1
-TitleLabel.Text = "AUTO HOP · 1-2 NGƯỜI"
+TitleLabel.Text = "AUTO HOP"
 TitleLabel.TextColor3 = Color3.fromRGB(120, 255, 180)
 TitleLabel.Font = Enum.Font.GothamBold
 TitleLabel.TextSize = 11
 TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
 TitleLabel.Parent = Main
 
+local PlayerCountLabel = Instance.new("TextLabel")
+PlayerCountLabel.Size = UDim2.new(1, -20, 0, 18)
+PlayerCountLabel.Position = UDim2.new(0, 10, 0, 28)
+PlayerCountLabel.BackgroundTransparency = 1
+PlayerCountLabel.Text = "Server: 1 người"
+PlayerCountLabel.TextColor3 = Color3.fromRGB(140, 220, 180)
+PlayerCountLabel.Font = Enum.Font.Code
+PlayerCountLabel.TextSize = 10
+PlayerCountLabel.TextXAlignment = Enum.TextXAlignment.Left
+PlayerCountLabel.Parent = Main
+
 local StatusLabel = Instance.new("TextLabel")
 StatusLabel.Size = UDim2.new(1, -20, 0, 18)
-StatusLabel.Position = UDim2.new(0, 10, 0, 30)
+StatusLabel.Position = UDim2.new(0, 10, 0, 50)
 StatusLabel.BackgroundTransparency = 1
 StatusLabel.Text = "Đang khởi động..."
 StatusLabel.TextColor3 = Color3.fromRGB(200, 220, 255)
@@ -69,17 +108,15 @@ StatusLabel.Parent = Main
 
 local InfoLabel = Instance.new("TextLabel")
 InfoLabel.Size = UDim2.new(1, -20, 0, 18)
-InfoLabel.Position = UDim2.new(0, 10, 0, 50)
+InfoLabel.Position = UDim2.new(0, 10, 0, 72)
 InfoLabel.BackgroundTransparency = 1
-InfoLabel.Text = "Quét: 0 | Tìm thấy: 0"
+InfoLabel.Text = "Sẵn sàng"
 InfoLabel.TextColor3 = Color3.fromRGB(140, 180, 220)
 InfoLabel.Font = Enum.Font.Code
 InfoLabel.TextSize = 9
 InfoLabel.TextXAlignment = Enum.TextXAlignment.Left
 InfoLabel.Parent = Main
 
--- ==== DRAG ====
-local UserInputService = game:GetService("UserInputService")
 local dragStart, startPos, dragging
 
 TitleLabel.InputBegan:Connect(function(input)
@@ -109,16 +146,13 @@ UserInputService.InputEnded:Connect(function(input)
     end
 end)
 
--- ==== SPINNER ====
 local SPINNER = {"|", "/", "-", "\\"}
-local SpinIndex = 1
 local SpinActive = false
 local SpinThread = nil
 local BaseText = ""
 
 local function startSpin(text)
     BaseText = text
-    SpinActive = false
     if SpinThread then pcall(function() task.cancel(SpinThread) end) end
     SpinActive = true
     SpinThread = task.spawn(function()
@@ -139,11 +173,35 @@ local function setStatus(text, color)
     if color then StatusLabel.TextColor3 = color end
 end
 
-local function setInfo(text)
+local function setInfo(text, color)
     InfoLabel.Text = text
+    if color then InfoLabel.TextColor3 = color end
 end
 
--- ==== SCAN ====
+local function updatePlayerCount()
+    local count = #Players:GetPlayers()
+    PlayerCountLabel.Text = "Server: " .. count .. " người"
+    if count > MIN_PLAYERS_TO_HOP then
+        PlayerCountLabel.TextColor3 = Color3.fromRGB(255, 150, 100)
+    elseif count == MIN_PLAYERS_TO_HOP then
+        PlayerCountLabel.TextColor3 = Color3.fromRGB(255, 220, 120)
+    else
+        PlayerCountLabel.TextColor3 = Color3.fromRGB(140, 220, 180)
+    end
+end
+
+Players.PlayerAdded:Connect(function()
+    task.wait(0.3)
+    updatePlayerCount()
+end)
+
+Players.PlayerRemoving:Connect(function()
+    task.wait(0.3)
+    updatePlayerCount()
+end)
+
+updatePlayerCount()
+
 local Blacklist = {}
 
 local function requestPage(cursor)
@@ -167,7 +225,7 @@ local function requestPage(cursor)
                 end
             end
         end
-        task.wait(0.5 * attempt)
+        task.wait(0.4 * attempt)
     end
     return nil
 end
@@ -178,7 +236,7 @@ local function findBestServer()
     local pages = 0
     local totalScanned = 0
 
-    while pages < 15 do
+    while pages < MAX_PAGES do
         local data = requestPage(cursor)
         if not data or type(data.data) ~= "table" then break end
 
@@ -208,7 +266,7 @@ local function findBestServer()
         if not cursor or cursor == "" or cursor == "null" then break end
         pages = pages + 1
 
-        setInfo("Quét: " .. totalScanned .. " server | Ứng viên: " .. #candidates)
+        setInfo("Quét: " .. totalScanned .. " | Ứng viên: " .. #candidates)
         task.wait(0.1)
     end
 
@@ -238,41 +296,45 @@ local function teleport(target)
     end
 end
 
--- ==== VÒNG LẶP CHÍNH ====
-task.spawn(function()
-    task.wait(1)
-
+local function mainLoop()
     if not http then
         setStatus("Không có HTTP!", Color3.fromRGB(255, 100, 100))
+        setInfo("Executor không hỗ trợ HTTP")
         return
     end
 
-    setStatus("Bắt đầu tìm server...", Color3.fromRGB(255, 200, 100))
+    task.wait(1)
+    setStatus("Đang theo dõi...", Color3.fromRGB(180, 200, 255))
 
     while true do
-        startSpin("Đang quét server")
-        local target, scanned = findBestServer()
+        local count = #Players:GetPlayers()
+        updatePlayerCount()
 
-        if not target then
-            setStatus("Không có server 1-2 người", Color3.fromRGB(255, 150, 100))
-            setInfo("Đã quét: " .. tostring(scanned) .. " | Chờ 3s...")
-            task.wait(3)
+        if count <= MIN_PLAYERS_TO_HOP then
+            setStatus("Chờ server > " .. MIN_PLAYERS_TO_HOP .. " người (" .. count .. ")", Color3.fromRGB(140, 200, 255))
+            setInfo("Chưa đủ điều kiện hop")
+            task.wait(1)
         else
-            setStatus("Vào: " .. target.playing .. " người · FPS" .. target.fps .. " · P" .. target.ping,
-                Color3.fromRGB(120, 255, 160))
-            setInfo("Đã quét: " .. tostring(scanned) .. " | Đang teleport...")
-            task.wait(0.8)
+            startSpin("Đang quét server")
+            setInfo("Đang tìm server 1-2 người...")
 
-            Blacklist[target.id] = true
-            teleport(target)
+            local target, scanned = findBestServer()
 
-            -- Chờ teleport hoặc timeout
-            task.wait(8)
-
-            -- Nếu vẫn ở server cũ → thử lại
-            task.wait(2)
+            if not target then
+                setStatus("Không có server 1-2 người", Color3.fromRGB(255, 150, 100))
+                setInfo("Đã quét: " .. tostring(scanned) .. " | Chờ 3s")
+                task.wait(3)
+            else
+                setStatus("Vào " .. target.playing .. " ng · FPS" .. target.fps .. " · P" .. target.ping,
+                    Color3.fromRGB(120, 255, 160))
+                setInfo("Đã quét: " .. tostring(scanned) .. " | Đang teleport")
+                task.wait(0.8)
+                Blacklist[target.id] = true
+                teleport(target)
+                task.wait(10)
+            end
         end
     end
-end)
+end
 
-print("[AUTO HOP] Loaded | Đang chạy liên tục tìm server 1-2 người")
+task.spawn(mainLoop)
