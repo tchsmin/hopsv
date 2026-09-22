@@ -7,7 +7,7 @@ local LocalPlayer = Players.LocalPlayer
 local PLACE_ID = game.PlaceId
 local JOB_ID = game.JobId
 
-local MIN_TOTAL_TO_HOP = 3
+local MIN_TOTAL_TO_HOP = 2
 local MAX_PAGES = 15
 
 local function getHttp()
@@ -77,7 +77,7 @@ local TitleLabel = Instance.new("TextLabel")
 TitleLabel.Size = UDim2.new(1, -20, 0, 18)
 TitleLabel.Position = UDim2.new(0, 10, 0, 8)
 TitleLabel.BackgroundTransparency = 1
-TitleLabel.Text = "AUTO HOP · TÌM SERVER 1 NGƯỜI"
+TitleLabel.Text = "AUTO HOP · SERVER 1 NGƯỜI"
 TitleLabel.TextColor3 = Color3.fromRGB(120, 255, 180)
 TitleLabel.Font = Enum.Font.GothamBold
 TitleLabel.TextSize = 11
@@ -88,7 +88,7 @@ local PlayerCountLabel = Instance.new("TextLabel")
 PlayerCountLabel.Size = UDim2.new(1, -20, 0, 18)
 PlayerCountLabel.Position = UDim2.new(0, 10, 0, 28)
 PlayerCountLabel.BackgroundTransparency = 1
-PlayerCountLabel.Text = "Server: 1 người (0 khác)"
+PlayerCountLabel.Text = "Server: 1 người"
 PlayerCountLabel.TextColor3 = Color3.fromRGB(140, 220, 180)
 PlayerCountLabel.Font = Enum.Font.Code
 PlayerCountLabel.TextSize = 10
@@ -182,19 +182,12 @@ local function getTotalPlayers()
     return #Players:GetPlayers()
 end
 
-local function getOthers()
-    return getTotalPlayers() - 1
-end
-
 local function updatePlayerCount()
     local total = getTotalPlayers()
-    local others = getOthers()
-    PlayerCountLabel.Text = "Server: " .. total .. " người (" .. others .. " khác)"
+    PlayerCountLabel.Text = "Server: " .. total .. " người"
 
     if total >= MIN_TOTAL_TO_HOP then
         PlayerCountLabel.TextColor3 = Color3.fromRGB(255, 150, 100)
-    elseif total == 2 then
-        PlayerCountLabel.TextColor3 = Color3.fromRGB(255, 220, 120)
     else
         PlayerCountLabel.TextColor3 = Color3.fromRGB(140, 220, 180)
     end
@@ -276,7 +269,7 @@ local function findOnePlayerServer()
         if not cursor or cursor == "" or cursor == "null" then break end
         pages = pages + 1
 
-        setInfo("Quét: " .. totalScanned .. " | Ứng viên 1 người: " .. #candidates)
+        setInfo("Quét: " .. totalScanned .. " | Ứng viên: " .. #candidates)
         task.wait(0.1)
     end
 
@@ -317,16 +310,15 @@ local function mainLoop()
 
     while true do
         local total = getTotalPlayers()
-        local others = getOthers()
         updatePlayerCount()
 
         if total < MIN_TOTAL_TO_HOP then
-            setStatus("Chờ đủ " .. MIN_TOTAL_TO_HOP .. " người (" .. total .. "/" .. MIN_TOTAL_TO_HOP .. ")", Color3.fromRGB(140, 200, 255))
-            setInfo("Cần " .. (MIN_TOTAL_TO_HOP - 1) .. " người khác · hiện có " .. others)
+            setStatus("Chờ server " .. MIN_TOTAL_TO_HOP .. " người (" .. total .. "/" .. MIN_TOTAL_TO_HOP .. ")", Color3.fromRGB(140, 200, 255))
+            setInfo("Cần server có " .. (MIN_TOTAL_TO_HOP - 1) .. " người khác")
             task.wait(1)
         else
             startSpin("Đang tìm server 1 người")
-            setInfo("Server có " .. others .. " khác · Đang quét server 1 người")
+            setInfo("Server có " .. total .. " người · Đang tìm server 1 người")
 
             local target, scanned = findOnePlayerServer()
 
