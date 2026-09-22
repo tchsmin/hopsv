@@ -7,7 +7,7 @@ local LocalPlayer = Players.LocalPlayer
 local PLACE_ID = game.PlaceId
 local JOB_ID = game.JobId
 
-local MIN_PLAYERS_TO_HOP = 3
+local MIN_TOTAL_PLAYERS = 3
 local MAX_PAGES = 15
 
 local function getHttp()
@@ -178,12 +178,22 @@ local function setInfo(text, color)
     if color then InfoLabel.TextColor3 = color end
 end
 
+local function getTotalPlayers()
+    return #Players:GetPlayers()
+end
+
+local function getOthers()
+    return getTotalPlayers() - 1
+end
+
 local function updatePlayerCount()
-    local count = #Players:GetPlayers()
-    PlayerCountLabel.Text = "Server: " .. count .. " người"
-    if count > MIN_PLAYERS_TO_HOP then
+    local total = getTotalPlayers()
+    local others = getOthers()
+    PlayerCountLabel.Text = "Server: " .. total .. " người (" .. others .. " khác)"
+
+    if total >= MIN_TOTAL_PLAYERS then
         PlayerCountLabel.TextColor3 = Color3.fromRGB(255, 150, 100)
-    elseif count == MIN_PLAYERS_TO_HOP then
+    elseif total == 2 then
         PlayerCountLabel.TextColor3 = Color3.fromRGB(255, 220, 120)
     else
         PlayerCountLabel.TextColor3 = Color3.fromRGB(140, 220, 180)
@@ -307,16 +317,17 @@ local function mainLoop()
     setStatus("Đang theo dõi...", Color3.fromRGB(180, 200, 255))
 
     while true do
-        local count = #Players:GetPlayers()
+        local total = getTotalPlayers()
+        local others = getOthers()
         updatePlayerCount()
 
-        if count <= MIN_PLAYERS_TO_HOP then
-            setStatus("Chờ server > " .. MIN_PLAYERS_TO_HOP .. " người (" .. count .. ")", Color3.fromRGB(140, 200, 255))
-            setInfo("Chưa đủ điều kiện hop")
+        if total < MIN_TOTAL_PLAYERS then
+            setStatus("Chờ đủ " .. MIN_TOTAL_PLAYERS .. " người (" .. total .. "/" .. MIN_TOTAL_PLAYERS .. ")", Color3.fromRGB(140, 200, 255))
+            setInfo("Cần " .. (MIN_TOTAL_PLAYERS - 1) .. " người khác + bạn")
             task.wait(1)
         else
             startSpin("Đang quét server")
-            setInfo("Đang tìm server 1-2 người...")
+            setInfo("Server có " .. others .. " người khác · Đang tìm server 1-2 người")
 
             local target, scanned = findBestServer()
 
