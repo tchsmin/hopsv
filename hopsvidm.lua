@@ -27,17 +27,16 @@ local CONFIG = {
     MaxPages = 25,
     ParallelBranches = 5,
     AutoHopDelay = 8,
+    MaxTotalAllowed = 2,
 }
 
 local Blacklist = {}
 local IsScanning = false
 local IsHopping = false
 local AutoHopEnabled = true
-local CurrentTargetPlayers = nil
+local TargetTotal = nil
 local MonitorConn = nil
-local ScanCount = 0
 local TotalScans = 0
-local LastFound = nil
 
 if CoreGui:FindFirstChild("HopUI") then CoreGui.HopUI:Destroy() end
 
@@ -137,7 +136,7 @@ local SubText = Instance.new("TextLabel")
 SubText.Size = UDim2.new(1, -110, 0, 12)
 SubText.Position = UDim2.new(0, 48, 0, 27)
 SubText.BackgroundTransparency = 1
-SubText.Text = "auto hop · 1 người"
+SubText.Text = "hop khi ≥ 3 người"
 SubText.TextColor3 = Color3.fromRGB(120, 140, 180)
 SubText.Font = Enum.Font.Gotham
 SubText.TextSize = 9
@@ -256,7 +255,7 @@ local function createStatCard(xPos, icon, label)
 end
 
 local PlayerValue = createStatCard(0, "👥", "PLAYERS")
-local ScanValue = createStatCard(0.5, "🎯", "FOUND")
+local ScanValue = createStatCard(0.5, "🎯", "HOPPED")
 
 local StatusBar = Instance.new("Frame")
 StatusBar.Size = UDim2.new(1, -24, 0, 36)
@@ -316,7 +315,7 @@ local TargetText = Instance.new("TextLabel")
 TargetText.Size = UDim2.new(1, -30, 1, 0)
 TargetText.Position = UDim2.new(0, 24, 0, 0)
 TargetText.BackgroundTransparency = 1
-TargetText.Text = "Mục tiêu: 1 người (2/2)"
+TargetText.Text = "Ở lại khi ≤ 2 người"
 TargetText.TextColor3 = Color3.fromRGB(120, 220, 180)
 TargetText.Font = Enum.Font.GothamBold
 TargetText.TextSize = 9
@@ -398,10 +397,8 @@ end
 local function updatePlayerCount()
     local count = #Players:GetPlayers()
     PlayerValue.Text = tostring(count)
-    if count <= 2 then
+    if count <= CONFIG.MaxTotalAllowed then
         PlayerValue.TextColor3 = Color3.fromRGB(120, 255, 160)
-    elseif count <= 4 then
-        PlayerValue.TextColor3 = Color3.fromRGB(255, 220, 120)
     else
         PlayerValue.TextColor3 = Color3.fromRGB(255, 120, 120)
     end
@@ -621,7 +618,7 @@ local function performHop()
     setDot(Color3.fromRGB(255, 200, 100))
     setIndicator(Color3.fromRGB(255, 200, 100))
     setStatus("Đang quét server 1 người...", Color3.fromRGB(255, 220, 140))
-    setTarget("Mục tiêu: 1 người (2/2)", Color3.fromRGB(120, 220, 180))
+    setTarget("Mục tiêu: 1 người khác + bạn (2)", Color3.fromRGB(120, 220, 180))
 
     if not http then
         IsScanning = false
@@ -632,13 +629,13 @@ local function performHop()
     end
 
     local target = scanForTarget(1)
-    local mode = "1 người (2/2)"
+    local mode = "1 người khác + bạn (2)"
 
     if not target then
-        setStatus("Thử mở rộng lên 2 người...", Color3.fromRGB(255, 200, 100))
-        setTarget("Mục tiêu: 2 người (3/3)", Color3.fromRGB(255, 200, 120))
+        setStatus("Thử mở rộng lên 2 người khác...", Color3.fromRGB(255, 200, 100))
+        setTarget("Mục tiêu: 2 người khác + bạn (3)", Color3.fromRGB(255, 200, 120))
         target = scanForTarget(2)
-        mode = "2 người (3/3)"
+        mode = "2 người khác + bạn (3)"
     end
 
     if not target then
@@ -653,11 +650,9 @@ local function performHop()
     setDot(Color3.fromRGB(255, 140, 60))
     setIndicator(Color3.fromRGB(255, 140, 60))
     setStatus("Vào server " .. mode, Color3.fromRGB(120, 255, 160))
-    setTarget("Đang vào: " .. target.playing .. "/" .. target.max .. " người", Color3.fromRGB(120, 220, 180))
+    setTarget("Đang vào: " .. (target.playing + 1) .. " người tổng", Color3.fromRGB(120, 220, 180))
 
-    ScanCount = ScanCount + 1
     TotalScans = TotalScans + 1
-    LastFound = target
     ScanValue.Text = tostring(TotalScans)
     ScanValue.TextColor3 = Color3.fromRGB(120, 255, 160)
 
@@ -666,7 +661,7 @@ local function performHop()
     IsScanning = false
     IsHopping = true
     Blacklist[target.id] = true
-    CurrentTargetPlayers = target.playing + 1
+    TargetTotal = target.playing + 1
 
     fastTeleport(target.id)
 
@@ -690,36 +685,34 @@ local function startMonitor()
         if count == lastPlayerCount then return end
         lastPlayerCount = count
 
-        if CurrentTargetPlayers then
-            if count > CurrentTargetPlayers then
-                setDot(Color3.fromRGB(255, 180, 100))
-                setIndicator(Color3.fromRGB(255, 180, 100))
-                setStatus("Có người vào · chờ " .. CONFIG.AutoHopDelay .. "s", Color3.fromRGB(255, 200, 120))
+        if count > CONFIG.MaxTotalAllowed then
+            setDot(Color3.fromRGB(255, 180, 100))
+            setIndicator(Color3.fromRGB(255, 180, 100))
+            setStatus("Server có " .. count .. " người · chờ " .. CONFIG.AutoHopDelay .. "s", Color3.fromRGB(255, 200, 120))
 
-                task.spawn(function()
-                    for i = CONFIG.AutoHopDelay, 1, -1 do
-                        if not AutoHopEnabled then return end
-                        local cnt = #Players:GetPlayers()
-                        if cnt <= CurrentTargetPlayers then
-                            setDot(Color3.fromRGB(60, 220, 120))
-                            setIndicator(Color3.fromRGB(60, 220, 120))
-                            setStatus("Người đó đã rời", Color3.fromRGB(120, 255, 160))
-                            return
-                        end
-                        setStatus("Hop sau " .. i .. "s · " .. cnt .. " người", Color3.fromRGB(255, 180, 100))
-                        task.wait(1)
+            task.spawn(function()
+                for i = CONFIG.AutoHopDelay, 1, -1 do
+                    if not AutoHopEnabled then return end
+                    local cnt = #Players:GetPlayers()
+                    if cnt <= CONFIG.MaxTotalAllowed then
+                        setDot(Color3.fromRGB(60, 220, 120))
+                        setIndicator(Color3.fromRGB(60, 220, 120))
+                        setStatus("Đã về " .. cnt .. " người · hủy hop", Color3.fromRGB(120, 255, 160))
+                        return
                     end
+                    setStatus("Hop sau " .. i .. "s · " .. cnt .. " người", Color3.fromRGB(255, 180, 100))
+                    task.wait(1)
+                end
 
-                    if #Players:GetPlayers() > CurrentTargetPlayers then
-                        setStatus("Auto hop", Color3.fromRGB(255, 150, 100))
-                        performHop()
-                    end
-                end)
-            end
+                if #Players:GetPlayers() > CONFIG.MaxTotalAllowed then
+                    setStatus("Auto hop", Color3.fromRGB(255, 150, 100))
+                    performHop()
+                end
+            end)
         else
-            if count >= 2 then
-                task.spawn(performHop)
-            end
+            setDot(Color3.fromRGB(60, 220, 120))
+            setIndicator(Color3.fromRGB(60, 220, 120))
+            setStatus("Server " .. count .. " người · ổn định", Color3.fromRGB(120, 255, 160))
         end
     end)
 end
@@ -781,15 +774,17 @@ TweenService:Create(Glow, TweenInfo.new(2, Enum.EasingStyle.Sine, Enum.EasingDir
 setDot(Color3.fromRGB(60, 220, 120))
 setIndicator(Color3.fromRGB(60, 220, 120))
 setStatus("Sẵn sàng", Color3.fromRGB(220, 230, 255))
-setTarget("Mục tiêu: 1 người (2/2)", Color3.fromRGB(120, 220, 180))
+setTarget("Ở lại khi ≤ 2 người", Color3.fromRGB(120, 220, 180))
 updatePlayerCount()
 startMonitor()
 
 task.spawn(function()
     task.wait(2)
-    if #Players:GetPlayers() >= 2 then
+    local count = #Players:GetPlayers()
+    if count > CONFIG.MaxTotalAllowed then
+        setStatus("Server đông · auto hop", Color3.fromRGB(255, 200, 120))
         performHop()
     else
-        setStatus("Đang chờ có người vào...", Color3.fromRGB(160, 200, 255))
+        setStatus("Server " .. count .. " người · chờ", Color3.fromRGB(120, 255, 160))
     end
 end)
