@@ -25,7 +25,7 @@ local CONFIG = {
     PreTeleportDelay = 0.1,
     MaxPages = 25,
     ParallelBranches = 5,
-    AutoHopDelay = 5,
+    AutoHopDelay = 3,
     MaxTotalAllowed = 2,
 }
 
