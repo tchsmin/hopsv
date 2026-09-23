@@ -17,26 +17,20 @@ local function getHttp()
 end
 local http = getHttp()
 
+-- ==== CONFIG TỐC ĐỘ ====
 local CONFIG = {
-    Tier1Playing = 1,
-    Tier1HopThreshold = 3,
-    Tier2Playing = 2,
-    Tier2HopThreshold = 4,
-    MaxPages = 20,
-    ParallelBranches = 4,
-    PageDelay = 0,
-    PassDelay = 0.4,
-    ConfirmDelay = 0.25,
-    PreTeleportDelay = 0.1,
-    MonitorInterval = 1,
+    PageDelay = 0,          -- Không delay giữa các trang
+    PassDelay = 0.5,        -- Delay giữa các pass (giảm từ 2.5s → 0.5s)
+    ConfirmDelay = 0.3,     -- Delay xác nhận (giảm từ 1.5s → 0.3s)
+    PreTeleportDelay = 0.1, -- Delay trước teleport (giảm từ 0.5s → 0.1s)
+    MaxPages = 20,          -- Quét nhiều trang hơn (tăng từ 12 → 20)
+    ParallelPages = 4,      -- Số trang quét song song
 }
 
 local Blacklist = {}
 local IsScanning = false
-local IsMonitoring = false
 local LoaderActive = false
 local loaderCoroutine = nil
-local CurrentTier = nil
 
 if CoreGui:FindFirstChild("HopUI") then CoreGui.HopUI:Destroy() end
 
@@ -49,8 +43,8 @@ ScreenGui.DisplayOrder = 999999
 ScreenGui.Parent = CoreGui
 
 local Container = Instance.new("Frame")
-Container.Size = UDim2.new(0, 210, 0, 120)
-Container.Position = UDim2.new(0, 20, 0.5, -60)
+Container.Size = UDim2.new(0, 200, 0, 110)
+Container.Position = UDim2.new(0, 20, 0.5, -55)
 Container.BackgroundTransparency = 1
 Container.Parent = ScreenGui
 
@@ -71,7 +65,7 @@ BtnCorner.CornerRadius = UDim.new(1, 0)
 BtnCorner.Parent = Btn
 
 local StatusLabel = Instance.new("TextLabel")
-StatusLabel.Size = UDim2.new(1, 0, 0, 20)
+StatusLabel.Size = UDim2.new(1, 0, 0, 22)
 StatusLabel.Position = UDim2.new(0, 0, 0, 84)
 StatusLabel.BackgroundColor3 = Color3.fromRGB(20, 22, 30)
 StatusLabel.BackgroundTransparency = 0.1
@@ -79,23 +73,13 @@ StatusLabel.BorderSizePixel = 0
 StatusLabel.Text = "Sẵn sàng"
 StatusLabel.TextColor3 = Color3.fromRGB(200, 220, 255)
 StatusLabel.Font = Enum.Font.GothamBold
-StatusLabel.TextSize = 10
+StatusLabel.TextSize = 11
 StatusLabel.TextWrapped = false
 StatusLabel.Parent = Container
 
 local StatusCorner = Instance.new("UICorner")
 StatusCorner.CornerRadius = UDim.new(0, 6)
 StatusCorner.Parent = StatusLabel
-
-local InfoLabel = Instance.new("TextLabel")
-InfoLabel.Size = UDim2.new(1, 0, 0, 16)
-InfoLabel.Position = UDim2.new(0, 0, 0, 106)
-InfoLabel.BackgroundTransparency = 1
-InfoLabel.Text = ""
-InfoLabel.TextColor3 = Color3.fromRGB(140, 180, 220)
-InfoLabel.Font = Enum.Font.Code
-InfoLabel.TextSize = 9
-InfoLabel.Parent = Container
 
 local SPINNER = {"|", "/", "-", "\\"}
 
@@ -122,11 +106,6 @@ local function stopLoading(finalText, color)
         StatusLabel.Text = finalText
         StatusLabel.TextColor3 = color or Color3.fromRGB(200, 220, 255)
     end
-end
-
-local function setInfo(text, color)
-    InfoLabel.Text = text
-    InfoLabel.TextColor3 = color or Color3.fromRGB(140, 180, 220)
 end
 
 local dragActive = false
@@ -178,6 +157,7 @@ UserInputService.InputEnded:Connect(function(input)
     end
 end)
 
+-- ==== REQUEST SINGLE PAGE (nhanh, không retry) ====
 local function requestPage(cursor)
     if not http then return nil end
     local url = string.format(
@@ -197,15 +177,21 @@ local function requestPage(cursor)
     return data
 end
 
-local function parallelScan(maxPages, targetPlaying)
+-- ==== PARALLEL SCAN: Lấy cursor đầu → quét nhiều nhánh song song ====
+local function parallelScan(maxPages, maxPlayers)
     local result = {}
-    local first = requestPage("")
-    if not first or not first.data then return result end
+    local scanned = 0
 
+    -- Bước 1: Lấy cursor gốc
+    local first = requestPage("")
+    if not first or not first.data then return result, 0 end
+
+    -- Xử lý trang đầu
     for _, s in ipairs(first.data) do
+        scanned = scanned + 1
         local pc = s.playing or 0
         local id = s.id
-        if id and id ~= JOB_ID and not Blacklist[id] and pc == targetPlaying then
+        if id and id ~= JOB_ID and not Blacklist[id] and pc >= 1 and pc <= maxPlayers then
             result[id] = {
                 id = id,
                 ping = s.ping or 999,
@@ -218,54 +204,60 @@ local function parallelScan(maxPages, targetPlaying)
 
     local rootCursor = first.nextPageCursor
     if not rootCursor or rootCursor == "" or rootCursor == "null" then
-        return result
+        return result, scanned
     end
 
+    -- Bước 2: Quét song song nhiều nhánh cursor
+    local totalBranches = math.min(CONFIG.ParallelPages, math.max(1, math.floor(maxPages / 5)))
+    local branches = {}
     local branchCursors = { rootCursor }
-    local branchesToSpawn = CONFIG.ParallelBranches
 
-    for i = 1, branchesToSpawn do
+    -- Lấy cursor của các nhánh
+    for i = 1, totalBranches do
         local cur = branchCursors[i]
-        if not cur then break end
-        local data = requestPage(cur)
-        if not data or not data.data then break end
-        for _, s in ipairs(data.data) do
-            local pc = s.playing or 0
-            local id = s.id
-            if id and id ~= JOB_ID and not Blacklist[id] and pc == targetPlaying then
-                result[id] = {
-                    id = id,
-                    ping = s.ping or 999,
-                    fps = s.fps or 60,
-                    playing = pc,
-                    max = s.maxPlayers or 12,
-                }
+        if cur then
+            local data = requestPage(cur)
+            if data then
+                for _, s in ipairs(data.data or {}) do
+                    scanned = scanned + 1
+                    local pc = s.playing or 0
+                    local id = s.id
+                    if id and id ~= JOB_ID and not Blacklist[id] and pc >= 1 and pc <= maxPlayers then
+                        result[id] = {
+                            id = id,
+                            ping = s.ping or 999,
+                            fps = s.fps or 60,
+                            playing = pc,
+                            max = s.maxPlayers or 12,
+                        }
+                    end
+                end
+                if data.nextPageCursor and data.nextPageCursor ~= "" and data.nextPageCursor ~= "null" then
+                    branchCursors[i + 1] = data.nextPageCursor
+                end
             end
         end
-        if data.nextPageCursor and data.nextPageCursor ~= "" and data.nextPageCursor ~= "null" then
-            branchCursors[i + 1] = data.nextPageCursor
-        end
     end
 
-    local pagesPerBranch = math.floor(maxPages / math.max(1, branchesToSpawn))
+    -- Bước 3: Chạy parallel từ mỗi branch cursor
+    local pageCount = math.floor(maxPages / math.max(1, totalBranches))
     local threads = {}
     local lock = false
 
-    for idx = 1, branchesToSpawn do
+    for idx = 1, totalBranches do
         local startCursor = branchCursors[idx]
         if startCursor then
             table.insert(threads, task.spawn(function()
                 local cursor = startCursor
                 local pages = 0
-                while pages < pagesPerBranch do
+                while pages < pageCount do
                     local data = requestPage(cursor)
                     if not data or not data.data then break end
-
                     local localResult = {}
                     for _, s in ipairs(data.data) do
                         local pc = s.playing or 0
                         local id = s.id
-                        if id and id ~= JOB_ID and not Blacklist[id] and pc == targetPlaying then
+                        if id and id ~= JOB_ID and not Blacklist[id] and pc >= 1 and pc <= maxPlayers then
                             localResult[id] = {
                                 id = id,
                                 ping = s.ping or 999,
@@ -276,6 +268,7 @@ local function parallelScan(maxPages, targetPlaying)
                         end
                     end
 
+                    -- Merge vào result
                     while lock do task.wait() end
                     lock = true
                     for id, s in pairs(localResult) do
@@ -292,28 +285,22 @@ local function parallelScan(maxPages, targetPlaying)
         end
     end
 
-    local timeout = tick() + 15
-    while tick() < timeout do
-        local allDone = true
-        for _, t in ipairs(threads) do
-            if coroutine.status(t) ~= "dead" then
-                allDone = false
-                break
-            end
-        end
-        if allDone then break end
-        task.wait(0.05)
+    -- Chờ tất cả thread xong
+    for _, t in ipairs(threads) do
+        pcall(function() task.wait(0) end)
     end
 
-    return result
+    return result, scanned
 end
 
 local function calculateScore(server, stabilityBonus)
     local playerScore = 0
     if server.playing == 1 then
-        playerScore = 1000
-    elseif server.playing == 2 then
         playerScore = 100
+    elseif server.playing == 2 then
+        playerScore = 40
+    elseif server.playing == 3 then
+        playerScore = 10
     end
 
     local fpsScore = math.max(0, 60 - server.fps) * 1.5
@@ -323,81 +310,34 @@ local function calculateScore(server, stabilityBonus)
     return playerScore + fpsScore + pingScore + stabilityScore
 end
 
+-- ==== FAST TELEPORT (ưu tiên TeleportAsync) ====
 local function fastTeleport(jobId)
     local success = false
+
+    -- Ưu tiên TeleportAsync (nhanh hơn)
     pcall(function()
         local opts = Instance.new("TeleportOptions")
         opts.ServerInstanceId = jobId
         TeleportService:TeleportAsync(PLACE_ID, {LocalPlayer}, opts)
         success = true
     end)
+
     if success then return true end
+
+    -- Fallback
     pcall(function()
         TeleportService:TeleportToPlaceInstance(PLACE_ID, jobId, LocalPlayer)
         success = true
     end)
+
     return success
-end
-
-local function startMonitor(threshold)
-    if IsMonitoring then return end
-    IsMonitoring = true
-
-    task.spawn(function()
-        local lastCount = -1
-        while IsMonitoring do
-            task.wait(CONFIG.MonitorInterval)
-
-            if not ScreenGui.Parent then
-                IsMonitoring = false
-                return
-            end
-
-            local count = #Players:GetPlayers()
-
-            if count ~= lastCount then
-                lastCount = count
-                local others = count - 1
-
-                if count >= threshold then
-                    stopLoading("Có " .. others .. " người khác! Đang hop...",
-                        Color3.fromRGB(255, 150, 100))
-                    setInfo("Vượt ngưỡng " .. threshold .. " → hop", Color3.fromRGB(255, 180, 100))
-                    IsMonitoring = false
-                    task.wait(0.3)
-                    Blacklist[JOB_ID] = true
-                    task.spawn(function()
-                        local ok = pcall(doHop)
-                        if not ok then
-                            stopLoading("Lỗi!", Color3.fromRGB(255, 100, 100))
-                            IsScanning = false
-                        end
-                    end)
-                    return
-                else
-                    local remain = threshold - count
-                    setInfo(
-                        "Server: " .. count .. " người (" .. others .. " khác) · chờ +" .. remain,
-                        Color3.fromRGB(255, 220, 120)
-                    )
-                    stopLoading("Đang ở server OK", Color3.fromRGB(120, 255, 160))
-                end
-            end
-        end
-    end)
-end
-
-local function stopMonitor()
-    IsMonitoring = false
 end
 
 function doHop()
     if IsScanning then return end
     IsScanning = true
-    stopMonitor()
 
-    startLoading("Đang dò server 1 người")
-    setInfo("Ưu tiên: server 1 người", Color3.fromRGB(180, 220, 255))
+    startLoading("Đang dò server")
 
     if not http then
         IsScanning = false
@@ -405,129 +345,78 @@ function doHop()
         return
     end
 
-    local pass1_t1 = parallelScan(CONFIG.MaxPages, CONFIG.Tier1Playing)
-    local count1_t1 = 0
-    for _ in pairs(pass1_t1) do count1_t1 = count1_t1 + 1 end
+    -- PASS 1: Parallel scan
+    local pass1, scanned1 = parallelScan(CONFIG.MaxPages, 2)
 
-    local targetTier = nil
-    local targetPool = nil
-    local hopThreshold = 0
+    local count1 = 0
+    for _ in pairs(pass1) do count1 = count1 + 1 end
 
-    if count1_t1 > 0 then
-        task.wait(CONFIG.PassDelay)
-        startLoading("Xác nhận server 1 người")
-
-        local pass2_t1 = parallelScan(CONFIG.MaxPages, CONFIG.Tier1Playing)
-
-        local stable = {}
-        for id, s in pairs(pass2_t1) do
-            if pass1_t1[id] then
-                s.stability = 2
-                if s.playing == pass1_t1[id].playing then
-                    s.stability = 3
-                end
-                table.insert(stable, s)
-            end
-        end
-
-        if #stable == 0 then
-            for id, s in pairs(pass1_t1) do
-                s.stability = 1
-                table.insert(stable, s)
-            end
-        end
-
-        task.wait(CONFIG.ConfirmDelay)
-
-        local scored = {}
-        for _, s in ipairs(stable) do
-            s.score = calculateScore(s, s.stability)
-            table.insert(scored, s)
-        end
-        table.sort(scored, function(a, b) return a.score > b.score end)
-
-        targetPool = scored
-        targetTier = "tier1"
-        hopThreshold = CONFIG.Tier1HopThreshold
-
-        setInfo(
-            "Tier 1: " .. count1_t1 .. " server 1 người",
-            Color3.fromRGB(120, 255, 160)
-        )
-    else
-        startLoading("Tìm server 2 người")
-        setInfo("Không có server 1 người · fallback tier 2",
-            Color3.fromRGB(255, 200, 100))
-
-        task.wait(0.2)
-
-        local pass1_t2 = parallelScan(CONFIG.MaxPages, CONFIG.Tier2Playing)
-        local count1_t2 = 0
-        for _ in pairs(pass1_t2) do count1_t2 = count1_t2 + 1 end
-
-        if count1_t2 == 0 then
-            IsScanning = false
-            stopLoading("Không có server!", Color3.fromRGB(255, 100, 100))
-            setInfo("Thử lại sau", Color3.fromRGB(255, 150, 150))
-            return
-        end
-
-        task.wait(CONFIG.PassDelay)
-        startLoading("Xác nhận server 2 người")
-
-        local pass2_t2 = parallelScan(CONFIG.MaxPages, CONFIG.Tier2Playing)
-
-        local stable = {}
-        for id, s in pairs(pass2_t2) do
-            if pass1_t2[id] then
-                s.stability = 2
-                if s.playing == pass1_t2[id].playing then
-                    s.stability = 3
-                end
-                table.insert(stable, s)
-            end
-        end
-
-        if #stable == 0 then
-            for id, s in pairs(pass1_t2) do
-                s.stability = 1
-                table.insert(stable, s)
-            end
-        end
-
-        task.wait(CONFIG.ConfirmDelay)
-
-        local scored = {}
-        for _, s in ipairs(stable) do
-            s.score = calculateScore(s, s.stability)
-            table.insert(scored, s)
-        end
-        table.sort(scored, function(a, b) return a.score > b.score end)
-
-        targetPool = scored
-        targetTier = "tier2"
-        hopThreshold = CONFIG.Tier2HopThreshold
-
-        setInfo(
-            "Tier 2: " .. count1_t2 .. " server 2 người",
-            Color3.fromRGB(255, 200, 100)
-        )
-    end
-
-    if not targetPool or #targetPool == 0 then
+    if count1 == 0 then
         IsScanning = false
         stopLoading("Không có server!", Color3.fromRGB(255, 100, 100))
         return
     end
 
-    local target = targetPool[1]
-    CurrentTier = targetTier
+    startLoading("Đang phân tích")
+    task.wait(CONFIG.PassDelay)
+
+    -- PASS 2: Parallel scan lại
+    local pass2, _ = parallelScan(CONFIG.MaxPages, 2)
+
+    local stable = {}
+    for id, s in pairs(pass2) do
+        if pass1[id] then
+            s.stability = 2
+            if s.playing == pass1[id].playing then
+                s.stability = 3
+            end
+            table.insert(stable, s)
+        end
+    end
+
+    if #stable == 0 then
+        for id, s in pairs(pass1) do
+            s.stability = 1
+            table.insert(stable, s)
+        end
+    end
+
+    startLoading("Đang xác nhận")
+    task.wait(CONFIG.ConfirmDelay)
+
+    local finalPool = {}
+    for _, s in ipairs(stable) do
+        local total = calculateScore(s, s.stability)
+        s.score = total
+        table.insert(finalPool, s)
+    end
+
+    table.sort(finalPool, function(a, b)
+        return a.score > b.score
+    end)
+
+    local onePlayer = {}
+    for _, s in ipairs(finalPool) do
+        if s.playing == 1 then
+            table.insert(onePlayer, s)
+        end
+    end
+
+    local pickFrom = onePlayer
+    if #pickFrom == 0 then
+        pickFrom = finalPool
+    end
+
+    local topCount = math.min(3, #pickFrom)
+    if topCount == 0 then
+        IsScanning = false
+        stopLoading("Không có server!", Color3.fromRGB(255, 100, 100))
+        return
+    end
+
+    local target = pickFrom[math.random(1, topCount)]
 
     startLoading("Đang vào server")
-    setInfo(
-        target.playing .. " người · FPS" .. target.fps .. " · P" .. target.ping,
-        Color3.fromRGB(120, 255, 160)
-    )
     task.wait(CONFIG.PreTeleportDelay)
 
     IsScanning = false
@@ -537,33 +426,5 @@ function doHop()
 
     if not ok then
         stopLoading("Lỗi! Bấm lại.", Color3.fromRGB(255, 100, 100))
-        return
     end
-
-    task.wait(3)
-    startMonitor(hopThreshold)
 end
-
-LocalPlayer.OnTeleport:Connect(function(state)
-    if state == Enum.TeleportState.Started then
-        stopMonitor()
-        IsMonitoring = false
-    end
-end)
-
-task.spawn(function()
-    task.wait(2)
-    if not IsMonitoring and not IsScanning then
-        local count = #Players:GetPlayers()
-        if count <= 2 then
-            local threshold = CONFIG.Tier1HopThreshold
-            if count >= 3 then
-                threshold = CONFIG.Tier2HopThreshold
-            end
-            startMonitor(threshold)
-            setInfo("Monitor tự động · ngưỡng " .. threshold, Color3.fromRGB(140, 220, 180))
-        end
-    end
-end)
-
-print("[HOP v13.3.1] Loaded")
