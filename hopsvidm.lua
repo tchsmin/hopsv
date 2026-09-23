@@ -35,21 +35,23 @@ end
 local UIParent = getUIParent()
 
 local CONFIG = {
-    PageDelay = 0,
-    PassDelay = 0.5,
-    ConfirmDelay = 0.3,
-    PreTeleportDelay = 0.1,
-    MaxPages = 25,
-    ParallelBranches = 5,
+    PageDelay = 0.25,
+    PassDelay = 2.5,
+    ConfirmDelay = 1.2,
+    PreTeleportDelay = 0.6,
+    MaxPages = 12,
+    ParallelBranches = 2,
     MaxTotalAllowed = 2,
-    AutoHopDelayMin = 3,
-    AutoHopDelayMax = 7,
-    TeleportTimeout = 8,
-    MaxHopRetries = 5,
+    AutoHopDelayMin = 12,
+    AutoHopDelayMax = 25,
+    TeleportTimeout = 10,
+    MaxHopRetries = 3,
+    RetryCooldown = 6,
     BlacklistMaxSize = 100,
     BlacklistResetTime = 1800,
     TargetOtherPlayers = 1,
     IsSteal = false,
+    MinScanInterval = 8,
 }
 
 local Blacklist = {}
@@ -59,8 +61,8 @@ local IsHopping = false
 local AutoEnabled = true
 local MonitorConn = nil
 local LastPlayerCount = 0
+local LastHopTime = 0
 local History = {}
-local StartTimestamp = os.time()
 
 pcall(function()
     local info = MarketplaceService:GetProductInfo(PLACE_ID)
@@ -349,8 +351,8 @@ task.spawn(function()
     end
 end)
 
-Players.PlayerAdded:Connect(function() task.wait(0.2) updatePlayerCount() end)
-Players.PlayerRemoving:Connect(function() task.wait(0.4) updatePlayerCount() end)
+Players.PlayerAdded:Connect(function() task.wait(0.3) updatePlayerCount() end)
+Players.PlayerRemoving:Connect(function() task.wait(0.5) updatePlayerCount() end)
 
 local SettingsPanel = Instance.new("Frame")
 SettingsPanel.Size = UDim2.new(0, 210, 0, 108)
@@ -514,8 +516,6 @@ SetBtn.MouseButton1Click:Connect(function()
     SettingsPanel.Visible = not SettingsPanel.Visible
 end)
 
-local function updatePlayerCount() end
-
 local function requestPage(cursor)
     if not http then return nil end
     local url = string.format(
@@ -572,6 +572,7 @@ local function parallelScan(targetPlaying)
     for i = 1, CONFIG.ParallelBranches do
         local cur = branchCursors[i]
         if cur then
+            task.wait(CONFIG.PageDelay)
             local data = requestPage(cur)
             if data then
                 collectFromData(data, targetPlaying, result, lockRef)
@@ -592,20 +593,20 @@ local function parallelScan(targetPlaying)
                 local cursor = startCursor
                 local pages = 0
                 while pages < pagesPerBranch do
+                    if CONFIG.PageDelay > 0 then task.wait(CONFIG.PageDelay) end
                     local data = requestPage(cursor)
                     if not data then break end
                     collectFromData(data, targetPlaying, result, lockRef)
                     cursor = data.nextPageCursor
                     if not cursor or cursor == "" or cursor == "null" then break end
                     pages = pages + 1
-                    if CONFIG.PageDelay > 0 then task.wait(CONFIG.PageDelay) end
                 end
             end))
         end
     end
 
-    for _ = 1, #threads do task.wait(0.05) end
-    task.wait(0.15)
+    for _ = 1, #threads do task.wait(0.3) end
+    task.wait(0.5)
 
     return result
 end
@@ -717,21 +718,9 @@ local function findBestServer()
         if result then
             return result, target
         end
+        task.wait(1)
     end
     return nil, nil
-end
-
-local function addHistory(target, success, msg)
-    table.insert(History, 1, {
-        id = target.id:sub(1, 8),
-        playing = target.playing,
-        fps = target.fps,
-        ping = target.ping,
-        success = success,
-        msg = msg,
-        time = os.date("%H:%M:%S"),
-    })
-    while #History > 10 do table.remove(History) end
 end
 
 local function resetBlacklistIfNeeded()
@@ -766,7 +755,15 @@ end
 
 local function performHop()
     if IsScanning or IsHopping then return end
+
+    local now = os.time()
+    local sinceLastHop = now - LastHopTime
+    if sinceLastHop < CONFIG.MinScanInterval then
+        task.wait(CONFIG.MinScanInterval - sinceLastHop)
+    end
+
     IsScanning = true
+    LastHopTime = os.time()
 
     if not http then
         IsScanning = false
@@ -785,7 +782,7 @@ local function performHop()
 
         if not target then
             setStatus("Không có server", Color3.fromRGB(255, 120, 120), "FAIL")
-            task.wait(5)
+            task.wait(CONFIG.RetryCooldown)
         else
             setStatus("Vào " .. target.playing .. "n · " .. target.fps .. "fps · " .. target.ping .. "ms",
                 Color3.fromRGB(120, 255, 160), "HOP")
@@ -799,22 +796,19 @@ local function performHop()
             local ok, reason = tryHopWithVerify(target)
 
             if ok then
-                addHistory(target, true, "OK")
                 return
             end
 
             IsHopping = false
             IsScanning = true
 
-            addHistory(target, false, reason)
-
             if reason == "send_fail" then
-                setStatus("Gửi lỗi · thử lại", Color3.fromRGB(255, 120, 120), "FAIL")
+                setStatus("Gửi lỗi · chờ", Color3.fromRGB(255, 120, 120), "FAIL")
             else
-                setStatus("Server lỗi · đổi", Color3.fromRGB(255, 150, 100), "FAIL")
+                setStatus("Server lỗi · chờ", Color3.fromRGB(255, 150, 100), "FAIL")
             end
 
-            task.wait(1)
+            task.wait(CONFIG.RetryCooldown)
         end
     end
 
@@ -822,7 +816,7 @@ local function performHop()
     IsHopping = false
     setStatus("Hết lần thử · chờ", Color3.fromRGB(255, 100, 100), "FAIL")
 
-    task.wait(10)
+    task.wait(CONFIG.RetryCooldown * 2)
     setStatus("Đang chạy", Color3.fromRGB(120, 255, 160), "ON")
 end
 
@@ -873,13 +867,6 @@ task.spawn(function()
     end
 end)
 
-pcall(function()
-    if queue_on_teleport then
-        local scriptUrl = ""
-        queue_on_teleport('loadstring(game:HttpGet("' .. scriptUrl .. '"))()')
-    end
-end)
-
 local dragging, dragStart, startPos
 Header.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1
@@ -921,7 +908,7 @@ setStatus("Đang chạy", Color3.fromRGB(120, 255, 160), "ON")
 startMonitor()
 
 task.spawn(function()
-    task.wait(2)
+    task.wait(3)
     local count = #Players:GetPlayers()
     if count > CONFIG.TargetOtherPlayers + 1 then
         performHop()
