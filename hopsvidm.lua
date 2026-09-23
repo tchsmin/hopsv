@@ -4,7 +4,6 @@ local HttpService = game:GetService("HttpService")
 local CoreGui = game:GetService("CoreGui")
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
-local TweenService = game:GetService("TweenService")
 
 local LocalPlayer = Players.LocalPlayer
 local PLACE_ID = game.PlaceId
@@ -26,22 +25,16 @@ local CONFIG = {
     PreTeleportDelay = 0.1,
     MaxPages = 25,
     ParallelBranches = 5,
-    AutoHopDelay = 8,
-    MaxTotalAllowed = 2,
 }
 
 local Blacklist = {}
 local IsScanning = false
-local IsHopping = false
-local AutoHopEnabled = true
-local TargetTotal = nil
-local MonitorConn = nil
-local TotalScans = 0
+local IsRunning = true
 
-if CoreGui:FindFirstChild("HopUI") then CoreGui.HopUI:Destroy() end
+if CoreGui:FindFirstChild("PhantomUI") then CoreGui.PhantomUI:Destroy() end
 
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "HopUI"
+ScreenGui.Name = "PhantomUI"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 ScreenGui.IgnoreGuiInset = true
@@ -49,372 +42,236 @@ ScreenGui.DisplayOrder = 999999
 ScreenGui.Parent = CoreGui
 
 local Main = Instance.new("Frame")
-Main.Size = UDim2.new(0, 240, 0, 180)
-Main.Position = UDim2.new(0, 20, 0.5, -90)
-Main.BackgroundColor3 = Color3.fromRGB(15, 17, 24)
+Main.Size = UDim2.new(0, 220, 0, 155)
+Main.Position = UDim2.new(0, 20, 0.5, -77)
+Main.BackgroundColor3 = Color3.fromRGB(16, 18, 26)
 Main.BorderSizePixel = 0
 Main.Active = true
-Main.ClipsDescendants = true
 Main.Parent = ScreenGui
 
 local MainCorner = Instance.new("UICorner")
-MainCorner.CornerRadius = UDim.new(0, 16)
+MainCorner.CornerRadius = UDim.new(0, 12)
 MainCorner.Parent = Main
 
 local MainStroke = Instance.new("UIStroke")
-MainStroke.Thickness = 1.2
-MainStroke.Transparency = 0.2
+MainStroke.Color = Color3.fromRGB(120, 80, 255)
+MainStroke.Thickness = 1
+MainStroke.Transparency = 0.3
 MainStroke.Parent = Main
-
-local StrokeGradient = Instance.new("UIGradient")
-StrokeGradient.Color = ColorSequence.new({
-    ColorSequenceKeypoint.new(0, Color3.fromRGB(80, 200, 255)),
-    ColorSequenceKeypoint.new(0.5, Color3.fromRGB(140, 100, 255)),
-    ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 100, 180))
-})
-StrokeGradient.Rotation = 45
-StrokeGradient.Parent = MainStroke
-
-local Glow = Instance.new("Frame")
-Glow.Size = UDim2.new(1, 20, 1, 20)
-Glow.Position = UDim2.new(0, -10, 0, -10)
-Glow.BackgroundColor3 = Color3.fromRGB(100, 140, 255)
-Glow.BackgroundTransparency = 0.9
-Glow.BorderSizePixel = 0
-Glow.ZIndex = 0
-Glow.Parent = Main
-
-local GlowCorner = Instance.new("UICorner")
-GlowCorner.CornerRadius = UDim.new(0, 24)
-GlowCorner.Parent = Glow
 
 local Header = Instance.new("Frame")
 Header.Size = UDim2.new(1, 0, 0, 44)
 Header.BackgroundTransparency = 1
 Header.Parent = Main
 
-local LogoCircle = Instance.new("Frame")
-LogoCircle.Size = UDim2.new(0, 26, 0, 26)
-LogoCircle.Position = UDim2.new(0, 14, 0, 11)
-LogoCircle.BackgroundColor3 = Color3.fromRGB(40, 45, 60)
-LogoCircle.BorderSizePixel = 0
-LogoCircle.Parent = Header
+local AvatarCircle = Instance.new("Frame")
+AvatarCircle.Size = UDim2.new(0, 30, 0, 30)
+AvatarCircle.Position = UDim2.new(0, 12, 0, 7)
+AvatarCircle.BackgroundColor3 = Color3.fromRGB(30, 24, 60)
+AvatarCircle.BorderSizePixel = 0
+AvatarCircle.Parent = Header
 
-local LogoCorner = Instance.new("UICorner")
-LogoCorner.CornerRadius = UDim.new(1, 0)
-LogoCorner.Parent = LogoCircle
+local AvCorner = Instance.new("UICorner")
+AvCorner.CornerRadius = UDim.new(1, 0)
+AvCorner.Parent = AvatarCircle
 
-local LogoGradient = Instance.new("UIGradient")
-LogoGradient.Color = ColorSequence.new({
-    ColorSequenceKeypoint.new(0, Color3.fromRGB(80, 200, 255)),
-    ColorSequenceKeypoint.new(1, Color3.fromRGB(140, 100, 255))
+local AvGradient = Instance.new("UIGradient")
+AvGradient.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(120, 80, 255)),
+    ColorSequenceKeypoint.new(1, Color3.fromRGB(60, 180, 255))
 })
-LogoGradient.Rotation = 45
-LogoGradient.Parent = LogoCircle
+AvGradient.Rotation = 45
+AvGradient.Parent = AvatarCircle
 
-local LogoText = Instance.new("TextLabel")
-LogoText.Size = UDim2.new(1, 0, 1, 0)
-LogoText.BackgroundTransparency = 1
-LogoText.Text = "⚡"
-LogoText.TextColor3 = Color3.fromRGB(255, 255, 255)
-LogoText.Font = Enum.Font.GothamBold
-LogoText.TextSize = 14
-LogoText.Parent = LogoCircle
+local AvatarIcon = Instance.new("ImageLabel")
+AvatarIcon.Size = UDim2.new(1, -8, 1, -8)
+AvatarIcon.Position = UDim2.new(0, 4, 0, 4)
+AvatarIcon.BackgroundTransparency = 1
+AvatarIcon.Image = "rbxassetid://6026568198"
+AvatarIcon.ImageColor3 = Color3.fromRGB(255, 255, 255)
+AvatarIcon.Parent = AvatarCircle
 
 local TitleText = Instance.new("TextLabel")
-TitleText.Size = UDim2.new(1, -110, 0, 16)
-TitleText.Position = UDim2.new(0, 48, 0, 12)
+TitleText.Size = UDim2.new(1, -60, 0, 16)
+TitleText.Position = UDim2.new(0, 50, 0, 10)
 TitleText.BackgroundTransparency = 1
-TitleText.Text = "SERVER HUNTER"
-TitleText.TextColor3 = Color3.fromRGB(240, 245, 255)
+TitleText.Text = "PHANTOM"
+TitleText.TextColor3 = Color3.fromRGB(240, 240, 255)
 TitleText.Font = Enum.Font.GothamBold
-TitleText.TextSize = 12
+TitleText.TextSize = 13
 TitleText.TextXAlignment = Enum.TextXAlignment.Left
 TitleText.Parent = Header
 
 local SubText = Instance.new("TextLabel")
-SubText.Size = UDim2.new(1, -110, 0, 12)
-SubText.Position = UDim2.new(0, 48, 0, 27)
+SubText.Size = UDim2.new(1, -60, 0, 12)
+SubText.Position = UDim2.new(0, 50, 0, 26)
 SubText.BackgroundTransparency = 1
-SubText.Text = "hop khi ≥ 3 người"
-SubText.TextColor3 = Color3.fromRGB(120, 140, 180)
+SubText.Text = "solo server hunter"
+SubText.TextColor3 = Color3.fromRGB(130, 130, 170)
 SubText.Font = Enum.Font.Gotham
 SubText.TextSize = 9
 SubText.TextXAlignment = Enum.TextXAlignment.Left
 SubText.Parent = Header
 
-local StatusPill = Instance.new("Frame")
-StatusPill.Size = UDim2.new(0, 58, 0, 20)
-StatusPill.Position = UDim2.new(1, -70, 0, 12)
-StatusPill.BackgroundColor3 = Color3.fromRGB(30, 40, 35)
-StatusPill.BorderSizePixel = 0
-StatusPill.Parent = Header
+local Divider = Instance.new("Frame")
+Divider.Size = UDim2.new(1, -24, 0, 1)
+Divider.Position = UDim2.new(0, 12, 0, 48)
+Divider.BackgroundColor3 = Color3.fromRGB(35, 40, 55)
+Divider.BorderSizePixel = 0
+Divider.Parent = Main
 
-local PillCorner = Instance.new("UICorner")
-PillCorner.CornerRadius = UDim.new(1, 0)
-PillCorner.Parent = StatusPill
+local PlayerRow = Instance.new("Frame")
+PlayerRow.Size = UDim2.new(1, -24, 0, 30)
+PlayerRow.Position = UDim2.new(0, 12, 0, 56)
+PlayerRow.BackgroundColor3 = Color3.fromRGB(24, 27, 38)
+PlayerRow.BorderSizePixel = 0
+PlayerRow.Parent = Main
 
-local PillDot = Instance.new("Frame")
-PillDot.Size = UDim2.new(0, 6, 0, 6)
-PillDot.Position = UDim2.new(0, 8, 0.5, -3)
-PillDot.BackgroundColor3 = Color3.fromRGB(60, 220, 120)
-PillDot.BorderSizePixel = 0
-PillDot.Parent = StatusPill
+local PRCorner = Instance.new("UICorner")
+PRCorner.CornerRadius = UDim.new(0, 7)
+PRCorner.Parent = PlayerRow
 
-local PillDotCorner = Instance.new("UICorner")
-PillDotCorner.CornerRadius = UDim.new(1, 0)
-PillDotCorner.Parent = PillDot
+local PlayerIcon = Instance.new("TextLabel")
+PlayerIcon.Size = UDim2.new(0, 30, 1, 0)
+PlayerIcon.Position = UDim2.new(0, 2, 0, 0)
+PlayerIcon.BackgroundTransparency = 1
+PlayerIcon.Text = "👥"
+PlayerIcon.TextColor3 = Color3.fromRGB(120, 180, 255)
+PlayerIcon.Font = Enum.Font.GothamBold
+PlayerIcon.TextSize = 14
+PlayerIcon.Parent = PlayerRow
 
-local PillPulse = Instance.new("Frame")
-PillPulse.Size = UDim2.new(1, 0, 1, 0)
-PillPulse.BackgroundColor3 = Color3.fromRGB(60, 220, 120)
-PillPulse.BackgroundTransparency = 0.7
-PillPulse.BorderSizePixel = 0
-PillPulse.Parent = PillDot
+local PlayerLabel = Instance.new("TextLabel")
+PlayerLabel.Size = UDim2.new(1, -100, 1, 0)
+PlayerLabel.Position = UDim2.new(0, 34, 0, 0)
+PlayerLabel.BackgroundTransparency = 1
+PlayerLabel.Text = "Số người"
+PlayerLabel.TextColor3 = Color3.fromRGB(160, 170, 200)
+PlayerLabel.Font = Enum.Font.Gotham
+PlayerLabel.TextSize = 10
+PlayerLabel.TextXAlignment = Enum.TextXAlignment.Left
+PlayerLabel.Parent = PlayerRow
+
+local PlayerValue = Instance.new("TextLabel")
+PlayerValue.Size = UDim2.new(0, 60, 1, 0)
+PlayerValue.Position = UDim2.new(1, -66, 0, 0)
+PlayerValue.BackgroundTransparency = 1
+PlayerValue.Text = "1"
+PlayerValue.TextColor3 = Color3.fromRGB(120, 255, 160)
+PlayerValue.Font = Enum.Font.GothamBold
+PlayerValue.TextSize = 13
+PlayerValue.TextXAlignment = Enum.TextXAlignment.Right
+PlayerValue.Parent = PlayerRow
+
+local StatusRow = Instance.new("Frame")
+StatusRow.Size = UDim2.new(1, -24, 0, 30)
+StatusRow.Position = UDim2.new(0, 12, 0, 90)
+StatusRow.BackgroundColor3 = Color3.fromRGB(24, 27, 38)
+StatusRow.BorderSizePixel = 0
+StatusRow.Parent = Main
+
+local SRCorner = Instance.new("UICorner")
+SRCorner.CornerRadius = UDim.new(0, 7)
+SRCorner.Parent = StatusRow
+
+local StatusDot = Instance.new("Frame")
+StatusDot.Size = UDim2.new(0, 8, 0, 8)
+StatusDot.Position = UDim2.new(0, 12, 0.5, -4)
+StatusDot.BackgroundColor3 = Color3.fromRGB(60, 220, 120)
+StatusDot.BorderSizePixel = 0
+StatusDot.Parent = StatusRow
+
+local DotCorner = Instance.new("UICorner")
+DotCorner.CornerRadius = UDim.new(1, 0)
+DotCorner.Parent = StatusDot
+
+local DotPulse = Instance.new("Frame")
+DotPulse.Size = UDim2.new(1, 0, 1, 0)
+DotPulse.BackgroundColor3 = Color3.fromRGB(60, 220, 120)
+DotPulse.BackgroundTransparency = 0.6
+DotPulse.BorderSizePixel = 0
+DotPulse.Parent = StatusDot
 
 local PulseCorner = Instance.new("UICorner")
 PulseCorner.CornerRadius = UDim.new(1, 0)
-PulseCorner.Parent = PillPulse
-
-local PillText = Instance.new("TextLabel")
-PillText.Size = UDim2.new(1, -20, 1, 0)
-PillText.Position = UDim2.new(0, 18, 0, 0)
-PillText.BackgroundTransparency = 1
-PillText.Text = "LIVE"
-PillText.TextColor3 = Color3.fromRGB(140, 255, 180)
-PillText.Font = Enum.Font.GothamBold
-PillText.TextSize = 9
-PillText.TextXAlignment = Enum.TextXAlignment.Left
-PillText.Parent = StatusPill
+PulseCorner.Parent = DotPulse
 
 task.spawn(function()
     while ScreenGui.Parent do
-        TweenService:Create(PillPulse, TweenInfo.new(1.2, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {
-            BackgroundTransparency = 1,
-            Size = UDim2.new(3, 0, 3, 0),
-            Position = UDim2.new(-1, 0, -1, 0)
-        }):Play()
-        task.wait(1.2)
-        PillPulse.BackgroundTransparency = 0.7
-        PillPulse.Size = UDim2.new(1, 0, 1, 0)
-        PillPulse.Position = UDim2.new(0, 0, 0, 0)
+        DotPulse.Size = UDim2.new(1, 0, 1, 0)
+        DotPulse.BackgroundTransparency = 0.6
+        task.wait(1)
+        DotPulse:TweenSizeAndPosition(UDim2.new(3, 0, 3, 0), UDim2.new(-1, 0, -1, 0), "Out", "Sine", 0.8)
+        DotPulse.BackgroundTransparency = 1
+        task.wait(0.8)
     end
 end)
 
-local StatsRow = Instance.new("Frame")
-StatsRow.Size = UDim2.new(1, -24, 0, 32)
-StatsRow.Position = UDim2.new(0, 12, 0, 50)
-StatsRow.BackgroundTransparency = 1
-StatsRow.Parent = Main
+local StatusLabel = Instance.new("TextLabel")
+StatusLabel.Size = UDim2.new(1, -100, 1, 0)
+StatusLabel.Position = UDim2.new(0, 26, 0, 0)
+StatusLabel.BackgroundTransparency = 1
+StatusLabel.Text = "Đang chạy"
+StatusLabel.TextColor3 = Color3.fromRGB(160, 170, 200)
+StatusLabel.Font = Enum.Font.Gotham
+StatusLabel.TextSize = 10
+StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+StatusLabel.Parent = StatusRow
 
-local function createStatCard(xPos, icon, label)
-    local card = Instance.new("Frame")
-    card.Size = UDim2.new(0.5, -4, 1, 0)
-    card.Position = UDim2.new(xPos, 0, 0, 0)
-    card.BackgroundColor3 = Color3.fromRGB(24, 27, 38)
-    card.BorderSizePixel = 0
-    card.Parent = StatsRow
-
-    local cc = Instance.new("UICorner")
-    cc.CornerRadius = UDim.new(0, 8)
-    cc.Parent = card
-
-    local iconLbl = Instance.new("TextLabel")
-    iconLbl.Size = UDim2.new(0, 24, 1, 0)
-    iconLbl.Position = UDim2.new(0, 6, 0, 0)
-    iconLbl.BackgroundTransparency = 1
-    iconLbl.Text = icon
-    iconLbl.TextColor3 = Color3.fromRGB(100, 160, 255)
-    iconLbl.Font = Enum.Font.GothamBold
-    iconLbl.TextSize = 13
-    iconLbl.Parent = card
-
-    local valueLbl = Instance.new("TextLabel")
-    valueLbl.Size = UDim2.new(1, -36, 0, 14)
-    valueLbl.Position = UDim2.new(0, 34, 0, 4)
-    valueLbl.BackgroundTransparency = 1
-    valueLbl.Text = "0"
-    valueLbl.TextColor3 = Color3.fromRGB(240, 245, 255)
-    valueLbl.Font = Enum.Font.GothamBold
-    valueLbl.TextSize = 12
-    valueLbl.TextXAlignment = Enum.TextXAlignment.Left
-    valueLbl.Parent = card
-
-    local tagLbl = Instance.new("TextLabel")
-    tagLbl.Size = UDim2.new(1, -36, 0, 10)
-    tagLbl.Position = UDim2.new(0, 34, 0, 18)
-    tagLbl.BackgroundTransparency = 1
-    tagLbl.Text = label
-    tagLbl.TextColor3 = Color3.fromRGB(120, 140, 180)
-    tagLbl.Font = Enum.Font.Gotham
-    tagLbl.TextSize = 8
-    tagLbl.TextXAlignment = Enum.TextXAlignment.Left
-    tagLbl.Parent = card
-
-    return valueLbl
-end
-
-local PlayerValue = createStatCard(0, "👥", "PLAYERS")
-local ScanValue = createStatCard(0.5, "🎯", "HOPPED")
-
-local StatusBar = Instance.new("Frame")
-StatusBar.Size = UDim2.new(1, -24, 0, 36)
-StatusBar.Position = UDim2.new(0, 12, 0, 88)
-StatusBar.BackgroundColor3 = Color3.fromRGB(24, 27, 38)
-StatusBar.BorderSizePixel = 0
-StatusBar.Parent = Main
-
-local StatusBarCorner = Instance.new("UICorner")
-StatusBarCorner.CornerRadius = UDim.new(0, 8)
-StatusBarCorner.Parent = StatusBar
-
-local StatusIndicator = Instance.new("Frame")
-StatusIndicator.Size = UDim2.new(0, 3, 1, -12)
-StatusIndicator.Position = UDim2.new(0, 6, 0, 6)
-StatusIndicator.BackgroundColor3 = Color3.fromRGB(60, 220, 120)
-StatusIndicator.BorderSizePixel = 0
-StatusIndicator.Parent = StatusBar
-
-local IndCorner = Instance.new("UICorner")
-IndCorner.CornerRadius = UDim.new(1, 0)
-IndCorner.Parent = StatusIndicator
-
-local StatusText = Instance.new("TextLabel")
-StatusText.Size = UDim2.new(1, -20, 1, 0)
-StatusText.Position = UDim2.new(0, 16, 0, 0)
-StatusText.BackgroundTransparency = 1
-StatusText.Text = "Đang khởi động..."
-StatusText.TextColor3 = Color3.fromRGB(220, 230, 255)
-StatusText.Font = Enum.Font.GothamBold
-StatusText.TextSize = 10
-StatusText.TextXAlignment = Enum.TextXAlignment.Left
-StatusText.Parent = StatusBar
-
-local TargetBar = Instance.new("Frame")
-TargetBar.Size = UDim2.new(1, -24, 0, 20)
-TargetBar.Position = UDim2.new(0, 12, 0, 128)
-TargetBar.BackgroundColor3 = Color3.fromRGB(24, 27, 38)
-TargetBar.BorderSizePixel = 0
-TargetBar.Parent = Main
-
-local TargetBarCorner = Instance.new("UICorner")
-TargetBarCorner.CornerRadius = UDim.new(0, 6)
-TargetBarCorner.Parent = TargetBar
-
-local TargetIcon = Instance.new("TextLabel")
-TargetIcon.Size = UDim2.new(0, 22, 1, 0)
-TargetIcon.Position = UDim2.new(0, 4, 0, 0)
-TargetIcon.BackgroundTransparency = 1
-TargetIcon.Text = "◎"
-TargetIcon.TextColor3 = Color3.fromRGB(120, 220, 180)
-TargetIcon.Font = Enum.Font.GothamBold
-TargetIcon.TextSize = 12
-TargetIcon.Parent = TargetBar
-
-local TargetText = Instance.new("TextLabel")
-TargetText.Size = UDim2.new(1, -30, 1, 0)
-TargetText.Position = UDim2.new(0, 24, 0, 0)
-TargetText.BackgroundTransparency = 1
-TargetText.Text = "Ở lại khi ≤ 2 người"
-TargetText.TextColor3 = Color3.fromRGB(120, 220, 180)
-TargetText.Font = Enum.Font.GothamBold
-TargetText.TextSize = 9
-TargetText.TextXAlignment = Enum.TextXAlignment.Left
-TargetText.Parent = TargetBar
-
-local ButtonRow = Instance.new("Frame")
-ButtonRow.Size = UDim2.new(1, -24, 0, 28)
-ButtonRow.Position = UDim2.new(0, 12, 0, 152)
-ButtonRow.BackgroundTransparency = 1
-ButtonRow.Parent = Main
+local StatusValue = Instance.new("TextLabel")
+StatusValue.Size = UDim2.new(0, 60, 1, 0)
+StatusValue.Position = UDim2.new(1, -66, 0, 0)
+StatusValue.BackgroundTransparency = 1
+StatusValue.Text = "ON"
+StatusValue.TextColor3 = Color3.fromRGB(120, 255, 160)
+StatusValue.Font = Enum.Font.GothamBold
+StatusValue.TextSize = 11
+StatusValue.TextXAlignment = Enum.TextXAlignment.Right
+StatusValue.Parent = StatusRow
 
 local HopBtn = Instance.new("TextButton")
-HopBtn.Size = UDim2.new(0.6, -3, 1, 0)
-HopBtn.Position = UDim2.new(0, 0, 0, 0)
-HopBtn.BackgroundColor3 = Color3.fromRGB(60, 140, 220)
-HopBtn.Text = "🚀  HOP NOW"
+HopBtn.Size = UDim2.new(1, -24, 0, 26)
+HopBtn.Position = UDim2.new(0, 12, 0, 124)
+HopBtn.BackgroundColor3 = Color3.fromRGB(80, 60, 180)
+HopBtn.Text = "⚡  HOP 1 NGƯỜI"
 HopBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 HopBtn.Font = Enum.Font.GothamBold
 HopBtn.TextSize = 11
 HopBtn.AutoButtonColor = false
-HopBtn.Parent = ButtonRow
+HopBtn.Parent = Main
 
-local HopCorner = Instance.new("UICorner")
-HopCorner.CornerRadius = UDim.new(0, 8)
-HopCorner.Parent = HopBtn
+local HBtnCorner = Instance.new("UICorner")
+HBtnCorner.CornerRadius = UDim.new(0, 7)
+HBtnCorner.Parent = HopBtn
 
-local HopGradient = Instance.new("UIGradient")
-HopGradient.Color = ColorSequence.new({
-    ColorSequenceKeypoint.new(0, Color3.fromRGB(80, 160, 255)),
-    ColorSequenceKeypoint.new(1, Color3.fromRGB(120, 100, 255))
+local HBtnGradient = Instance.new("UIGradient")
+HBtnGradient.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(100, 70, 220)),
+    ColorSequenceKeypoint.new(1, Color3.fromRGB(60, 130, 255))
 })
-HopGradient.Rotation = 0
-HopGradient.Parent = HopBtn
+HBtnGradient.Rotation = 0
+HBtnGradient.Parent = HopBtn
 
-local AutoBtn = Instance.new("TextButton")
-AutoBtn.Size = UDim2.new(0.4, -3, 1, 0)
-AutoBtn.Position = UDim2.new(0.6, 3, 0, 0)
-AutoBtn.BackgroundColor3 = Color3.fromRGB(40, 45, 60)
-AutoBtn.Text = "AUTO ON"
-AutoBtn.TextColor3 = Color3.fromRGB(140, 255, 180)
-AutoBtn.Font = Enum.Font.GothamBold
-AutoBtn.TextSize = 10
-AutoBtn.AutoButtonColor = false
-AutoBtn.Parent = ButtonRow
-
-local AutoCorner = Instance.new("UICorner")
-AutoCorner.CornerRadius = UDim.new(0, 8)
-AutoCorner.Parent = AutoBtn
-
-local AutoStroke = Instance.new("UIStroke")
-AutoStroke.Color = Color3.fromRGB(60, 220, 120)
-AutoStroke.Thickness = 1
-AutoStroke.Transparency = 0.3
-AutoStroke.Parent = AutoBtn
-
-local SPINNER = {"◐", "◓", "◑", "◒"}
-local spinIndex = 1
-
-local function setStatus(text, color)
-    StatusText.Text = text
-    if color then StatusText.TextColor3 = color end
-end
-
-local function setIndicator(color)
-    StatusIndicator.BackgroundColor3 = color
-end
-
-local function setTarget(text, color)
-    TargetText.Text = text
-    if color then TargetText.TextColor3 = color end
-end
-
-local function setDot(color)
-    PillDot.BackgroundColor3 = color
-    PillPulse.BackgroundColor3 = color
+local function setStatus(text, color, state)
+    StatusLabel.Text = text
+    StatusValue.Text = state or ""
+    StatusValue.TextColor3 = color or Color3.fromRGB(120, 255, 160)
+    StatusDot.BackgroundColor3 = color or Color3.fromRGB(60, 220, 120)
+    DotPulse.BackgroundColor3 = color or Color3.fromRGB(60, 220, 120)
 end
 
 local function updatePlayerCount()
     local count = #Players:GetPlayers()
     PlayerValue.Text = tostring(count)
-    if count <= CONFIG.MaxTotalAllowed then
+    if count == 1 then
         PlayerValue.TextColor3 = Color3.fromRGB(120, 255, 160)
+    elseif count == 2 then
+        PlayerValue.TextColor3 = Color3.fromRGB(255, 220, 120)
     else
         PlayerValue.TextColor3 = Color3.fromRGB(255, 120, 120)
     end
     return count
 end
-
-task.spawn(function()
-    while ScreenGui.Parent do
-        spinIndex = spinIndex + 1
-        if spinIndex > #SPINNER then spinIndex = 1 end
-        if IsScanning and not IsHopping then
-            StatusText.Text = SPINNER[spinIndex] .. " Đang quét server..."
-        end
-        task.wait(0.15)
-    end
-end)
 
 Players.PlayerAdded:Connect(function() task.wait(0.2) updatePlayerCount() end)
 Players.PlayerRemoving:Connect(function() task.wait(0.4) updatePlayerCount() end)
@@ -514,17 +371,10 @@ local function parallelScan(targetPlaying)
 end
 
 local function calculateScore(server, stabilityBonus)
-    local playerScore = 0
-    if server.playing == 1 then
-        playerScore = 1000
-    elseif server.playing == 2 then
-        playerScore = 200
-    end
-
+    local playerScore = 1000
     local fpsScore = math.max(0, 60 - server.fps) * 2
     local pingScore = math.min(server.ping, 500) / 4
     local stabilityScore = stabilityBonus * 100
-
     return playerScore + fpsScore + pingScore + stabilityScore
 end
 
@@ -544,15 +394,15 @@ local function fastTeleport(jobId)
     return success
 end
 
-local function scanForTarget(targetPlaying)
-    local pass1 = parallelScan(targetPlaying)
+local function scanForOnePlayer()
+    local pass1 = parallelScan(1)
     local count1 = 0
     for _ in pairs(pass1) do count1 = count1 + 1 end
     if count1 == 0 then return nil end
 
     task.wait(CONFIG.PassDelay)
 
-    local pass2 = parallelScan(targetPlaying)
+    local pass2 = parallelScan(1)
 
     local stable = {}
     for id, s in pairs(pass2) do
@@ -593,129 +443,48 @@ local function scanForTarget(targetPlaying)
     return finalPool[math.random(1, topCount)]
 end
 
-local function setAutoHop(enabled)
-    AutoHopEnabled = enabled
-    if enabled then
-        AutoBtn.Text = "AUTO ON"
-        AutoBtn.TextColor3 = Color3.fromRGB(140, 255, 180)
-        AutoStroke.Color = Color3.fromRGB(60, 220, 120)
-        AutoStroke.Transparency = 0.3
-    else
-        AutoBtn.Text = "AUTO OFF"
-        AutoBtn.TextColor3 = Color3.fromRGB(140, 150, 180)
-        AutoStroke.Color = Color3.fromRGB(80, 90, 120)
-        AutoStroke.Transparency = 0.5
-    end
-end
-
-AutoBtn.MouseButton1Click:Connect(function()
-    setAutoHop(not AutoHopEnabled)
-end)
-
 local function performHop()
-    if IsScanning or IsHopping then return end
+    if IsScanning then return end
     IsScanning = true
-    setDot(Color3.fromRGB(255, 200, 100))
-    setIndicator(Color3.fromRGB(255, 200, 100))
-    setStatus("Đang quét server 1 người...", Color3.fromRGB(255, 220, 140))
-    setTarget("Mục tiêu: 1 người khác + bạn (2)", Color3.fromRGB(120, 220, 180))
+
+    setStatus("Đang quét server...", Color3.fromRGB(255, 200, 100), "...")
+    HopBtn.Text = "ĐANG QUÉT..."
 
     if not http then
         IsScanning = false
-        setDot(Color3.fromRGB(255, 100, 100))
-        setIndicator(Color3.fromRGB(255, 100, 100))
-        setStatus("Executor không hỗ trợ HTTP", Color3.fromRGB(255, 120, 120))
+        setStatus("Lỗi HTTP", Color3.fromRGB(255, 100, 100), "OFF")
+        HopBtn.Text = "⚡  HOP 1 NGƯỜI"
         return
     end
 
-    local target = scanForTarget(1)
-    local mode = "1 người khác + bạn (2)"
-
-    if not target then
-        setStatus("Thử mở rộng lên 2 người khác...", Color3.fromRGB(255, 200, 100))
-        setTarget("Mục tiêu: 2 người khác + bạn (3)", Color3.fromRGB(255, 200, 120))
-        target = scanForTarget(2)
-        mode = "2 người khác + bạn (3)"
-    end
+    local target = scanForOnePlayer()
 
     if not target then
         IsScanning = false
-        setDot(Color3.fromRGB(255, 100, 100))
-        setIndicator(Color3.fromRGB(255, 100, 100))
-        setStatus("Không tìm thấy server", Color3.fromRGB(255, 120, 120))
-        task.wait(5)
+        setStatus("Không có server", Color3.fromRGB(255, 120, 120), "FAIL")
+        HopBtn.Text = "⚡  HOP 1 NGƯỜI"
+        task.wait(3)
+        setStatus("Đang chạy", Color3.fromRGB(120, 255, 160), "ON")
         return
     end
 
-    setDot(Color3.fromRGB(255, 140, 60))
-    setIndicator(Color3.fromRGB(255, 140, 60))
-    setStatus("Vào server " .. mode, Color3.fromRGB(120, 255, 160))
-    setTarget("Đang vào: " .. (target.playing + 1) .. " người tổng", Color3.fromRGB(120, 220, 180))
-
-    TotalScans = TotalScans + 1
-    ScanValue.Text = tostring(TotalScans)
-    ScanValue.TextColor3 = Color3.fromRGB(120, 255, 160)
+    setStatus("Đang vào server...", Color3.fromRGB(120, 255, 160), "HOP")
+    HopBtn.Text = "ĐANG VÀO..."
 
     task.wait(CONFIG.PreTeleportDelay)
 
     IsScanning = false
-    IsHopping = true
     Blacklist[target.id] = true
-    TargetTotal = target.playing + 1
 
     fastTeleport(target.id)
 
-    task.wait(3)
-    IsHopping = false
+    setStatus("Đã hop", Color3.fromRGB(120, 255, 160), "ON")
+    HopBtn.Text = "⚡  HOP 1 NGƯỜI"
 end
 
 HopBtn.MouseButton1Click:Connect(function()
     task.spawn(performHop)
 end)
-
-local lastPlayerCount = 0
-
-local function startMonitor()
-    if MonitorConn then MonitorConn:Disconnect() end
-    MonitorConn = RunService.Heartbeat:Connect(function()
-        if not AutoHopEnabled then return end
-        if IsHopping or IsScanning then return end
-
-        local count = #Players:GetPlayers()
-        if count == lastPlayerCount then return end
-        lastPlayerCount = count
-
-        if count > CONFIG.MaxTotalAllowed then
-            setDot(Color3.fromRGB(255, 180, 100))
-            setIndicator(Color3.fromRGB(255, 180, 100))
-            setStatus("Server có " .. count .. " người · chờ " .. CONFIG.AutoHopDelay .. "s", Color3.fromRGB(255, 200, 120))
-
-            task.spawn(function()
-                for i = CONFIG.AutoHopDelay, 1, -1 do
-                    if not AutoHopEnabled then return end
-                    local cnt = #Players:GetPlayers()
-                    if cnt <= CONFIG.MaxTotalAllowed then
-                        setDot(Color3.fromRGB(60, 220, 120))
-                        setIndicator(Color3.fromRGB(60, 220, 120))
-                        setStatus("Đã về " .. cnt .. " người · hủy hop", Color3.fromRGB(120, 255, 160))
-                        return
-                    end
-                    setStatus("Hop sau " .. i .. "s · " .. cnt .. " người", Color3.fromRGB(255, 180, 100))
-                    task.wait(1)
-                end
-
-                if #Players:GetPlayers() > CONFIG.MaxTotalAllowed then
-                    setStatus("Auto hop", Color3.fromRGB(255, 150, 100))
-                    performHop()
-                end
-            end)
-        else
-            setDot(Color3.fromRGB(60, 220, 120))
-            setIndicator(Color3.fromRGB(60, 220, 120))
-            setStatus("Server " .. count .. " người · ổn định", Color3.fromRGB(120, 255, 160))
-        end
-    end)
-end
 
 local dragging, dragStart, startPos
 Header.InputBegan:Connect(function(input)
@@ -746,45 +515,22 @@ UserInputService.InputEnded:Connect(function(input)
 end)
 
 HopBtn.MouseEnter:Connect(function()
-    TweenService:Create(HopBtn, TweenInfo.new(0.15), {
-        BackgroundColor3 = Color3.fromRGB(90, 170, 255)
-    }):Play()
+    HopBtn.BackgroundColor3 = Color3.fromRGB(110, 80, 220)
 end)
 HopBtn.MouseLeave:Connect(function()
-    TweenService:Create(HopBtn, TweenInfo.new(0.15), {
-        BackgroundColor3 = Color3.fromRGB(60, 140, 220)
-    }):Play()
+    HopBtn.BackgroundColor3 = Color3.fromRGB(80, 60, 180)
 end)
 
-AutoBtn.MouseEnter:Connect(function()
-    TweenService:Create(AutoBtn, TweenInfo.new(0.15), {
-        BackgroundColor3 = Color3.fromRGB(55, 60, 80)
-    }):Play()
-end)
-AutoBtn.MouseLeave:Connect(function()
-    TweenService:Create(AutoBtn, TweenInfo.new(0.15), {
-        BackgroundColor3 = Color3.fromRGB(40, 45, 60)
-    }):Play()
-end)
-
-TweenService:Create(Glow, TweenInfo.new(2, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true), {
-    BackgroundTransparency = 0.85
-}):Play()
-
-setDot(Color3.fromRGB(60, 220, 120))
-setIndicator(Color3.fromRGB(60, 220, 120))
-setStatus("Sẵn sàng", Color3.fromRGB(220, 230, 255))
-setTarget("Ở lại khi ≤ 2 người", Color3.fromRGB(120, 220, 180))
-updatePlayerCount()
-startMonitor()
-
-task.spawn(function()
-    task.wait(2)
-    local count = #Players:GetPlayers()
-    if count > CONFIG.MaxTotalAllowed then
-        setStatus("Server đông · auto hop", Color3.fromRGB(255, 200, 120))
-        performHop()
-    else
-        setStatus("Server " .. count .. " người · chờ", Color3.fromRGB(120, 255, 160))
+coroutine.wrap(function()
+    while ScreenGui.Parent do
+        task.wait(0.5)
+        if not IsRunning then
+            setStatus("Đang off", Color3.fromRGB(140, 140, 160), "OFF")
+            StatusDot.BackgroundColor3 = Color3.fromRGB(140, 140, 160)
+            DotPulse.BackgroundColor3 = Color3.fromRGB(140, 140, 160)
+        end
     end
-end)
+end)()
+
+updatePlayerCount()
+setStatus("Đang chạy", Color3.fromRGB(120, 255, 160), "ON")
