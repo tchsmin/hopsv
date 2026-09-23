@@ -25,11 +25,17 @@ local CONFIG = {
     PreTeleportDelay = 0.1,
     MaxPages = 25,
     ParallelBranches = 5,
+    AutoHopDelay = 5,
+    MaxTotalAllowed = 2,
 }
 
 local Blacklist = {}
 local IsScanning = false
-local IsRunning = true
+local IsHopping = false
+local AutoEnabled = true
+local TargetTotal = nil
+local MonitorConn = nil
+local LastPlayerCount = 0
 
 if CoreGui:FindFirstChild("PhantomUI") then CoreGui.PhantomUI:Destroy() end
 
@@ -42,8 +48,8 @@ ScreenGui.DisplayOrder = 999999
 ScreenGui.Parent = CoreGui
 
 local Main = Instance.new("Frame")
-Main.Size = UDim2.new(0, 220, 0, 155)
-Main.Position = UDim2.new(0, 20, 0.5, -77)
+Main.Size = UDim2.new(0, 200, 0, 108)
+Main.Position = UDim2.new(0, 20, 0.5, -54)
 Main.BackgroundColor3 = Color3.fromRGB(16, 18, 26)
 Main.BorderSizePixel = 0
 Main.Active = true
@@ -60,69 +66,42 @@ MainStroke.Transparency = 0.3
 MainStroke.Parent = Main
 
 local Header = Instance.new("Frame")
-Header.Size = UDim2.new(1, 0, 0, 44)
+Header.Size = UDim2.new(1, 0, 0, 32)
 Header.BackgroundTransparency = 1
 Header.Parent = Main
 
-local AvatarCircle = Instance.new("Frame")
-AvatarCircle.Size = UDim2.new(0, 30, 0, 30)
-AvatarCircle.Position = UDim2.new(0, 12, 0, 7)
-AvatarCircle.BackgroundColor3 = Color3.fromRGB(30, 24, 60)
-AvatarCircle.BorderSizePixel = 0
-AvatarCircle.Parent = Header
-
-local AvCorner = Instance.new("UICorner")
-AvCorner.CornerRadius = UDim.new(1, 0)
-AvCorner.Parent = AvatarCircle
-
-local AvGradient = Instance.new("UIGradient")
-AvGradient.Color = ColorSequence.new({
-    ColorSequenceKeypoint.new(0, Color3.fromRGB(120, 80, 255)),
-    ColorSequenceKeypoint.new(1, Color3.fromRGB(60, 180, 255))
-})
-AvGradient.Rotation = 45
-AvGradient.Parent = AvatarCircle
-
-local AvatarIcon = Instance.new("ImageLabel")
-AvatarIcon.Size = UDim2.new(1, -8, 1, -8)
-AvatarIcon.Position = UDim2.new(0, 4, 0, 4)
-AvatarIcon.BackgroundTransparency = 1
-AvatarIcon.Image = "rbxassetid://6026568198"
-AvatarIcon.ImageColor3 = Color3.fromRGB(255, 255, 255)
-AvatarIcon.Parent = AvatarCircle
-
 local TitleText = Instance.new("TextLabel")
-TitleText.Size = UDim2.new(1, -60, 0, 16)
-TitleText.Position = UDim2.new(0, 50, 0, 10)
+TitleText.Size = UDim2.new(1, -24, 1, 0)
+TitleText.Position = UDim2.new(0, 12, 0, 0)
 TitleText.BackgroundTransparency = 1
-TitleText.Text = "PHANTOM"
+TitleText.Text = "HOP SERVER"
 TitleText.TextColor3 = Color3.fromRGB(240, 240, 255)
 TitleText.Font = Enum.Font.GothamBold
-TitleText.TextSize = 13
+TitleText.TextSize = 12
 TitleText.TextXAlignment = Enum.TextXAlignment.Left
 TitleText.Parent = Header
 
-local SubText = Instance.new("TextLabel")
-SubText.Size = UDim2.new(1, -60, 0, 12)
-SubText.Position = UDim2.new(0, 50, 0, 26)
-SubText.BackgroundTransparency = 1
-SubText.Text = "solo server hunter"
-SubText.TextColor3 = Color3.fromRGB(130, 130, 170)
-SubText.Font = Enum.Font.Gotham
-SubText.TextSize = 9
-SubText.TextXAlignment = Enum.TextXAlignment.Left
-SubText.Parent = Header
+local HeaderDot = Instance.new("Frame")
+HeaderDot.Size = UDim2.new(0, 6, 0, 6)
+HeaderDot.Position = UDim2.new(1, -16, 0.5, -3)
+HeaderDot.BackgroundColor3 = Color3.fromRGB(120, 80, 255)
+HeaderDot.BorderSizePixel = 0
+HeaderDot.Parent = Header
+
+local HdCorner = Instance.new("UICorner")
+HdCorner.CornerRadius = UDim.new(1, 0)
+HdCorner.Parent = HeaderDot
 
 local Divider = Instance.new("Frame")
 Divider.Size = UDim2.new(1, -24, 0, 1)
-Divider.Position = UDim2.new(0, 12, 0, 48)
+Divider.Position = UDim2.new(0, 12, 0, 34)
 Divider.BackgroundColor3 = Color3.fromRGB(35, 40, 55)
 Divider.BorderSizePixel = 0
 Divider.Parent = Main
 
 local PlayerRow = Instance.new("Frame")
 PlayerRow.Size = UDim2.new(1, -24, 0, 30)
-PlayerRow.Position = UDim2.new(0, 12, 0, 56)
+PlayerRow.Position = UDim2.new(0, 12, 0, 40)
 PlayerRow.BackgroundColor3 = Color3.fromRGB(24, 27, 38)
 PlayerRow.BorderSizePixel = 0
 PlayerRow.Parent = Main
@@ -165,7 +144,7 @@ PlayerValue.Parent = PlayerRow
 
 local StatusRow = Instance.new("Frame")
 StatusRow.Size = UDim2.new(1, -24, 0, 30)
-StatusRow.Position = UDim2.new(0, 12, 0, 90)
+StatusRow.Position = UDim2.new(0, 12, 0, 76)
 StatusRow.BackgroundColor3 = Color3.fromRGB(24, 27, 38)
 StatusRow.BorderSizePixel = 0
 StatusRow.Parent = Main
@@ -199,9 +178,16 @@ PulseCorner.Parent = DotPulse
 task.spawn(function()
     while ScreenGui.Parent do
         DotPulse.Size = UDim2.new(1, 0, 1, 0)
+        DotPulse.Position = UDim2.new(0, 0, 0, 0)
         DotPulse.BackgroundTransparency = 0.6
         task.wait(1)
-        DotPulse:TweenSizeAndPosition(UDim2.new(3, 0, 3, 0), UDim2.new(-1, 0, -1, 0), "Out", "Sine", 0.8)
+        DotPulse:TweenSizeAndPosition(
+            UDim2.new(3, 0, 3, 0),
+            UDim2.new(-1, 0, -1, 0),
+            Enum.EasingDirection.Out,
+            Enum.EasingStyle.Sine,
+            0.8
+        )
         DotPulse.BackgroundTransparency = 1
         task.wait(0.8)
     end
@@ -229,29 +215,6 @@ StatusValue.TextSize = 11
 StatusValue.TextXAlignment = Enum.TextXAlignment.Right
 StatusValue.Parent = StatusRow
 
-local HopBtn = Instance.new("TextButton")
-HopBtn.Size = UDim2.new(1, -24, 0, 26)
-HopBtn.Position = UDim2.new(0, 12, 0, 124)
-HopBtn.BackgroundColor3 = Color3.fromRGB(80, 60, 180)
-HopBtn.Text = "⚡  HOP 1 NGƯỜI"
-HopBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-HopBtn.Font = Enum.Font.GothamBold
-HopBtn.TextSize = 11
-HopBtn.AutoButtonColor = false
-HopBtn.Parent = Main
-
-local HBtnCorner = Instance.new("UICorner")
-HBtnCorner.CornerRadius = UDim.new(0, 7)
-HBtnCorner.Parent = HopBtn
-
-local HBtnGradient = Instance.new("UIGradient")
-HBtnGradient.Color = ColorSequence.new({
-    ColorSequenceKeypoint.new(0, Color3.fromRGB(100, 70, 220)),
-    ColorSequenceKeypoint.new(1, Color3.fromRGB(60, 130, 255))
-})
-HBtnGradient.Rotation = 0
-HBtnGradient.Parent = HopBtn
-
 local function setStatus(text, color, state)
     StatusLabel.Text = text
     StatusValue.Text = state or ""
@@ -263,10 +226,8 @@ end
 local function updatePlayerCount()
     local count = #Players:GetPlayers()
     PlayerValue.Text = tostring(count)
-    if count == 1 then
+    if count <= 2 then
         PlayerValue.TextColor3 = Color3.fromRGB(120, 255, 160)
-    elseif count == 2 then
-        PlayerValue.TextColor3 = Color3.fromRGB(255, 220, 120)
     else
         PlayerValue.TextColor3 = Color3.fromRGB(255, 120, 120)
     end
@@ -371,11 +332,10 @@ local function parallelScan(targetPlaying)
 end
 
 local function calculateScore(server, stabilityBonus)
-    local playerScore = 1000
     local fpsScore = math.max(0, 60 - server.fps) * 2
     local pingScore = math.min(server.ping, 500) / 4
     local stabilityScore = stabilityBonus * 100
-    return playerScore + fpsScore + pingScore + stabilityScore
+    return 1000 + fpsScore + pingScore + stabilityScore
 end
 
 local function fastTeleport(jobId)
@@ -444,16 +404,14 @@ local function scanForOnePlayer()
 end
 
 local function performHop()
-    if IsScanning then return end
+    if IsScanning or IsHopping then return end
     IsScanning = true
 
     setStatus("Đang quét server...", Color3.fromRGB(255, 200, 100), "...")
-    HopBtn.Text = "ĐANG QUÉT..."
 
     if not http then
         IsScanning = false
         setStatus("Lỗi HTTP", Color3.fromRGB(255, 100, 100), "OFF")
-        HopBtn.Text = "⚡  HOP 1 NGƯỜI"
         return
     end
 
@@ -462,29 +420,61 @@ local function performHop()
     if not target then
         IsScanning = false
         setStatus("Không có server", Color3.fromRGB(255, 120, 120), "FAIL")
-        HopBtn.Text = "⚡  HOP 1 NGƯỜI"
-        task.wait(3)
+        task.wait(5)
         setStatus("Đang chạy", Color3.fromRGB(120, 255, 160), "ON")
         return
     end
 
     setStatus("Đang vào server...", Color3.fromRGB(120, 255, 160), "HOP")
-    HopBtn.Text = "ĐANG VÀO..."
 
     task.wait(CONFIG.PreTeleportDelay)
 
     IsScanning = false
+    IsHopping = true
     Blacklist[target.id] = true
+    TargetTotal = target.playing + 1
 
     fastTeleport(target.id)
 
-    setStatus("Đã hop", Color3.fromRGB(120, 255, 160), "ON")
-    HopBtn.Text = "⚡  HOP 1 NGƯỜI"
+    task.wait(3)
+    IsHopping = false
+    setStatus("Đang chạy", Color3.fromRGB(120, 255, 160), "ON")
 end
 
-HopBtn.MouseButton1Click:Connect(function()
-    task.spawn(performHop)
-end)
+local function startMonitor()
+    if MonitorConn then MonitorConn:Disconnect() end
+    MonitorConn = RunService.Heartbeat:Connect(function()
+        if not AutoEnabled then return end
+        if IsHopping or IsScanning then return end
+
+        local count = #Players:GetPlayers()
+        if count == LastPlayerCount then return end
+        LastPlayerCount = count
+
+        if count > CONFIG.MaxTotalAllowed then
+            setStatus("Server có " .. count .. " người · chờ " .. CONFIG.AutoHopDelay .. "s", Color3.fromRGB(255, 200, 120), "...")
+
+            task.spawn(function()
+                for i = CONFIG.AutoHopDelay, 1, -1 do
+                    if not AutoEnabled then return end
+                    local cnt = #Players:GetPlayers()
+                    if cnt <= CONFIG.MaxTotalAllowed then
+                        setStatus("Đã về " .. cnt .. " người", Color3.fromRGB(120, 255, 160), "ON")
+                        return
+                    end
+                    setStatus("Hop sau " .. i .. "s · " .. cnt .. " người", Color3.fromRGB(255, 180, 100), "...")
+                    task.wait(1)
+                end
+
+                if #Players:GetPlayers() > CONFIG.MaxTotalAllowed then
+                    performHop()
+                end
+            end)
+        else
+            setStatus("Server " .. count .. " người · ổn", Color3.fromRGB(120, 255, 160), "ON")
+        end
+    end)
+end
 
 local dragging, dragStart, startPos
 Header.InputBegan:Connect(function(input)
@@ -514,23 +504,14 @@ UserInputService.InputEnded:Connect(function(input)
     end
 end)
 
-HopBtn.MouseEnter:Connect(function()
-    HopBtn.BackgroundColor3 = Color3.fromRGB(110, 80, 220)
-end)
-HopBtn.MouseLeave:Connect(function()
-    HopBtn.BackgroundColor3 = Color3.fromRGB(80, 60, 180)
-end)
-
-coroutine.wrap(function()
-    while ScreenGui.Parent do
-        task.wait(0.5)
-        if not IsRunning then
-            setStatus("Đang off", Color3.fromRGB(140, 140, 160), "OFF")
-            StatusDot.BackgroundColor3 = Color3.fromRGB(140, 140, 160)
-            DotPulse.BackgroundColor3 = Color3.fromRGB(140, 140, 160)
-        end
-    end
-end)()
-
 updatePlayerCount()
 setStatus("Đang chạy", Color3.fromRGB(120, 255, 160), "ON")
+startMonitor()
+
+task.spawn(function()
+    task.wait(2)
+    local count = #Players:GetPlayers()
+    if count > CONFIG.MaxTotalAllowed then
+        performHop()
+    end
+end)
