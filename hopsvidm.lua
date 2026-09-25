@@ -18,24 +18,20 @@ end
 local http = getHttp()
 
 local CONFIG = {
-    PageDelay = 0,
-    PassDelay = 0.5,
-    ConfirmDelay = 0.3,
-    PreTeleportDelay = 0.2,
-    MaxPages = 60,
+    PassDelay = 0.4,
+    ConfirmDelay = 0.2,
+    PreTeleportDelay = 0.15,
+    MaxPages = 40,
     ParallelBranches = 6,
     AutoHopDelay = 3,
     MaxTotalAllowed = 2,
-    ScanRetries = 8,
-    RetryWait = 1.5,
+    LoopWait = 1.5,
+    TeleportWait = 4,
 }
 
 local Blacklist = {}
-local IsScanning = false
+local IsRunning = true
 local IsHopping = false
-local IsCountingDown = false
-local AutoEnabled = true
-local ScanFailCount = 0
 
 if CoreGui:FindFirstChild("PhantomUI") then CoreGui.PhantomUI:Destroy() end
 
@@ -256,57 +252,7 @@ local function requestPage(cursor)
     return data
 end
 
-local DEBUG = {
-    totalSeen = 0,
-    minPlaying = 999,
-    distribution = {},
-    onePlayerFound = 0,
-}
-
-local function recordDebug(playing)
-    DEBUG.totalSeen = DEBUG.totalSeen + 1
-    if playing < DEBUG.minPlaying then DEBUG.minPlaying = playing end
-    DEBUG.distribution[playing] = (DEBUG.distribution[playing] or 0) + 1
-    if playing == 1 then DEBUG.onePlayerFound = DEBUG.onePlayerFound + 1 end
-end
-
-local function fullScanForOne()
-    local result = {}
-    local cursor = ""
-    local pages = 0
-    local lockRef = {false}
-
-    while pages < CONFIG.MaxPages do
-        local data = requestPage(cursor)
-        if not data or not data.data then break end
-
-        for _, s in ipairs(data.data) do
-            local pc = tonumber(s.playing) or 0
-            local id = s.id
-            recordDebug(pc)
-
-            if id and id ~= JOB_ID and not Blacklist[id] and pc == 1 then
-                lockRef[1] = true
-                result[id] = {
-                    id = id,
-                    ping = tonumber(s.ping) or 999,
-                    fps = tonumber(s.fps) or 60,
-                    playing = pc,
-                    max = tonumber(s.maxPlayers) or 12,
-                }
-                lockRef[1] = false
-            end
-        end
-
-        cursor = data.nextPageCursor
-        if not cursor or cursor == "" or cursor == "null" then break end
-        pages = pages + 1
-    end
-
-    return result
-end
-
-local function parallelScanForOne()
+local function scanParallel()
     local result = {}
     local lockRef = {false}
 
@@ -316,7 +262,6 @@ local function parallelScanForOne()
     for _, s in ipairs(first.data or {}) do
         local pc = tonumber(s.playing) or 0
         local id = s.id
-        recordDebug(pc)
         if id and id ~= JOB_ID and not Blacklist[id] and pc == 1 then
             result[id] = {
                 id = id,
@@ -342,7 +287,6 @@ local function parallelScanForOne()
                 for _, s in ipairs(data.data or {}) do
                     local pc = tonumber(s.playing) or 0
                     local id = s.id
-                    recordDebug(pc)
                     if id and id ~= JOB_ID and not Blacklist[id] and pc == 1 then
                         result[id] = {
                             id = id,
@@ -375,7 +319,6 @@ local function parallelScanForOne()
                     for _, s in ipairs(data.data or {}) do
                         local pc = tonumber(s.playing) or 0
                         local id = s.id
-                        recordDebug(pc)
                         if id and id ~= JOB_ID and not Blacklist[id] and pc == 1 then
                             while lockRef[1] do task.wait() end
                             lockRef[1] = true
@@ -398,7 +341,7 @@ local function parallelScanForOne()
     end
 
     for _ = 1, #threads do task.wait(0.05) end
-    task.wait(0.15)
+    task.wait(0.1)
 
     return result
 end
@@ -426,15 +369,15 @@ local function fastTeleport(jobId)
     return success
 end
 
-local function scanForOnePlayer()
-    local pass1 = parallelScanForOne()
+local function findOneServer()
+    local pass1 = scanParallel()
     local count1 = 0
     for _ in pairs(pass1) do count1 = count1 + 1 end
     if count1 == 0 then return nil end
 
     task.wait(CONFIG.PassDelay)
 
-    local pass2 = parallelScanForOne()
+    local pass2 = scanParallel()
 
     local stable = {}
     for id, s in pairs(pass2) do
@@ -472,155 +415,87 @@ local function scanForOnePlayer()
     return finalPool
 end
 
-local function dumpDebug()
-    local top = {}
-    for playing, count in pairs(DEBUG.distribution) do
-        table.insert(top, {playing = playing, count = count})
-    end
-    table.sort(top, function(a, b) return a.playing < b.playing end)
+local function mainLoop()
+    task.wait(1)
 
-    local parts = {}
-    for i = 1, math.min(8, #top) do
-        local t = top[i]
-        table.insert(parts, t.playing .. "ng:" .. t.count)
-    end
+    while IsRunning and ScreenGui.Parent do
+        local count = updatePlayerCount()
 
-    return "seen " .. DEBUG.totalSeen .. " | min " .. DEBUG.minPlaying .. " | " .. table.concat(parts, " ")
-end
+        if count <= CONFIG.MaxTotalAllowed then
+            setStatus("Server " .. count .. " người · ổn", Color3.fromRGB(120, 255, 160), "ON")
 
-local function performHop()
-    if IsScanning or IsHopping then return end
-    IsScanning = true
-    IsCountingDown = false
+            for _ = 1, CONFIG.AutoHopDelay do
+                if not ScreenGui.Parent then return end
+                task.wait(1)
+                count = #Players:GetPlayers()
+                updatePlayerCount()
+                if count > CONFIG.MaxTotalAllowed then break end
+            end
 
-    setStatus("Đang quét server 1 người...", Color3.fromRGB(255, 200, 100), "...")
-
-    if not http then
-        IsScanning = false
-        setStatus("Lỗi HTTP", Color3.fromRGB(255, 100, 100), "OFF")
-        return
-    end
-
-    DEBUG.totalSeen = 0
-    DEBUG.minPlaying = 999
-    DEBUG.distribution = {}
-    DEBUG.onePlayerFound = 0
-
-    local pool = nil
-
-    for attempt = 1, CONFIG.ScanRetries do
-        pool = scanForOnePlayer()
-        if pool and #pool > 0 then break end
-
-        setStatus("Quét lại " .. attempt .. "/" .. CONFIG.ScanRetries .. " · " .. DEBUG.onePlayerFound .. " found", Color3.fromRGB(255, 180, 100), "...")
-        task.wait(CONFIG.RetryWait)
-    end
-
-    if not pool or #pool == 0 then
-        IsScanning = false
-        ScanFailCount = ScanFailCount + 1
-
-        local debugText = dumpDebug()
-        setStatus("Không có · " .. debugText, Color3.fromRGB(255, 120, 120), "FAIL")
-
-        Blacklist = {}
-
-        if ScanFailCount >= 3 then
-            ScanFailCount = 0
-            task.wait(3)
-        else
-            task.wait(5)
+            if count <= CONFIG.MaxTotalAllowed then
+                continue
+            end
         end
 
-        setStatus("Đang chạy", Color3.fromRGB(120, 255, 160), "ON")
-        return
-    end
-
-    ScanFailCount = 0
-
-    local target = pool[1]
-
-    setStatus("Vào " .. #pool .. " pool · FPS" .. target.fps .. " · P" .. target.ping, Color3.fromRGB(120, 255, 160), "HOP")
-
-    task.wait(CONFIG.PreTeleportDelay)
-
-    IsScanning = false
-    IsHopping = true
-    Blacklist[target.id] = true
-
-    local ok = fastTeleport(target.id)
-
-    if not ok then
-        setStatus("Teleport fail", Color3.fromRGB(255, 100, 100), "FAIL")
-        IsHopping = false
-        task.wait(1)
-        performHop()
-        return
-    end
-
-    task.wait(3)
-    IsHopping = false
-    setStatus("Đang chạy", Color3.fromRGB(120, 255, 160), "ON")
-end
-
-local function startCountdown()
-    if IsCountingDown then return end
-    IsCountingDown = true
-
-    task.spawn(function()
-        setStatus("Có người vào · chờ " .. CONFIG.AutoHopDelay .. "s", Color3.fromRGB(255, 200, 120), "...")
+        setStatus("Chờ xác nhận người mới...", Color3.fromRGB(255, 200, 100), "...")
 
         for i = CONFIG.AutoHopDelay, 1, -1 do
-            if not AutoEnabled then
-                IsCountingDown = false
-                return
-            end
-
+            if not ScreenGui.Parent then return end
             local cnt = #Players:GetPlayers()
             if cnt <= CONFIG.MaxTotalAllowed then
-                setStatus("Đã về " .. cnt .. " người · hủy hop", Color3.fromRGB(120, 255, 160), "ON")
-                IsCountingDown = false
-                return
+                setStatus("Người rời · hủy hop", Color3.fromRGB(120, 255, 160), "ON")
+                break
             end
-
             setStatus("Hop sau " .. i .. "s · " .. cnt .. " người", Color3.fromRGB(255, 180, 100), "...")
             task.wait(1)
         end
 
-        IsCountingDown = false
+        if #Players:GetPlayers() <= CONFIG.MaxTotalAllowed then
+            continue
+        end
 
-        if not AutoEnabled then return end
-        if #Players:GetPlayers() <= CONFIG.MaxTotalAllowed then return end
-        if IsHopping or IsScanning then return end
+        local found = false
+        local scanAttempt = 0
 
-        performHop()
-    end)
+        while not found and ScreenGui.Parent and IsRunning do
+            scanAttempt = scanAttempt + 1
+            setStatus("Đang quét lần " .. scanAttempt, Color3.fromRGB(255, 200, 100), "...")
+
+            if not http then
+                setStatus("Lỗi HTTP", Color3.fromRGB(255, 100, 100), "OFF")
+                task.wait(2)
+                continue
+            end
+
+            local pool = findOneServer()
+
+            if pool and #pool > 0 then
+                local target = pool[1]
+                setStatus("Tìm được " .. #pool .. " server · vào", Color3.fromRGB(120, 255, 160), "HOP")
+
+                Blacklist[target.id] = true
+                task.wait(CONFIG.PreTeleportDelay)
+
+                local ok = fastTeleport(target.id)
+
+                if ok then
+                    found = true
+                    IsHopping = true
+                    task.wait(CONFIG.TeleportWait)
+                    IsHopping = false
+                    break
+                else
+                    setStatus("Teleport fail · quét lại", Color3.fromRGB(255, 100, 100), "FAIL")
+                    task.wait(1)
+                end
+            else
+                Blacklist = {}
+                setStatus("Không có · quét lại sau " .. CONFIG.LoopWait .. "s", Color3.fromRGB(255, 150, 100), "...")
+                task.wait(CONFIG.LoopWait)
+            end
+        end
+    end
 end
-
-Players.PlayerAdded:Connect(function(plr)
-    if plr == LocalPlayer then return end
-    if not AutoEnabled then return end
-
-    task.wait(0.3)
-    updatePlayerCount()
-
-    if IsHopping or IsScanning then return end
-
-    local count = #Players:GetPlayers()
-    if count > CONFIG.MaxTotalAllowed then
-        startCountdown()
-    end
-end)
-
-Players.PlayerRemoving:Connect(function()
-    task.wait(0.4)
-    updatePlayerCount()
-
-    local count = #Players:GetPlayers()
-    if count <= CONFIG.MaxTotalAllowed then
-        IsCountingDown = false
-    end
-end)
 
 local dragging, dragStart, startPos
 Header.InputBegan:Connect(function(input)
@@ -653,10 +528,4 @@ end)
 updatePlayerCount()
 setStatus("Đang chạy", Color3.fromRGB(120, 255, 160), "ON")
 
-task.spawn(function()
-    task.wait(2)
-    local count = #Players:GetPlayers()
-    if count > CONFIG.MaxTotalAllowed then
-        startCountdown()
-    end
-end)
+task.spawn(mainLoop)
