@@ -39,11 +39,12 @@ local CONFIG = {
     ScanPages = 15,
     PassDelay = 2,
     ConfirmDelay = 1,
-    BlacklistTTL = 90,
-    MaxBlacklist = 200,
+    BlacklistTTL = 180,
+    MaxBlacklist = 500,
     RequestRetries = 3,
-    LeaderboardCheckDelay = 6,
     LeaderboardRefreshWait = 8,
+    LeaderboardCheckInterval = 6,
+    TeleportTimeout = 8,
 }
 
 local State = {
@@ -60,8 +61,10 @@ local State = {
     FailCount = 0,
     LoopRunning = false,
     LastLeaderboardCheck = 0,
-    PlayerRank = nil,
     IsTopOne = false,
+    CurrentTargetId = nil,
+    TeleportFailedFlag = false,
+    TeleportFailReason = nil,
 }
 
 local function cleanBlacklist()
@@ -78,6 +81,30 @@ local function cleanBlacklist()
         State.Blacklist = {}
     end
 end
+
+local function resetState()
+    State.IsScanning = false
+    State.IsHopping = false
+    State.TeleportPending = false
+    State.NeedHop = false
+    State.TeleportFailedFlag = false
+    State.TeleportFailReason = nil
+end
+
+pcall(function()
+    TeleportService.TeleportInitFailed:Connect(function(player, teleportResult, errorMessage)
+        if player ~= LocalPlayer then return end
+
+        State.TeleportFailedFlag = true
+        State.TeleportFailReason = tostring(errorMessage or teleportResult or "unknown")
+
+        if State.CurrentTargetId then
+            State.Blacklist[State.CurrentTargetId] = tick()
+        end
+
+        notify("Lỗi: " .. State.TeleportFailReason .. " · dò lại", 4)
+    end)
+end)
 
 local function requestPage(cursor)
     if not http then return nil end
@@ -241,20 +268,19 @@ end
 
 local function checkTopOneInLeaderboard()
     local found = false
-    local myRank = nil
 
     local function scanGui(gui)
         for _, obj in ipairs(gui:GetDescendants()) do
-            if obj:IsA("GuiObject") and obj.Visible then
+            if obj:IsA("TextLabel") or obj:IsA("TextButton") then
                 pcall(function()
-                    if obj:IsA("TextLabel") or obj:IsA("TextButton") then
-                        local text = obj.Text
-                        if type(text) == "string" and text:find(LocalPlayer.Name) then
+                    if obj.Visible and type(obj.Text) == "string" then
+                        if obj.Text:find(LocalPlayer.Name) then
                             found = true
                         end
                     end
                 end)
             end
+            if found then return end
         end
     end
 
@@ -263,16 +289,18 @@ local function checkTopOneInLeaderboard()
         if playerGui then scanGui(playerGui) end
     end)
 
-    pcall(function()
-        local coreGui = game:GetService("CoreGui")
-        if coreGui then
-            for _, gui in ipairs(coreGui:GetChildren()) do
-                if gui:IsA("ScreenGui") or gui:IsA("Folder") then
-                    scanGui(gui)
+    if not found then
+        pcall(function()
+            local coreGui = game:GetService("CoreGui")
+            if coreGui then
+                for _, gui in ipairs(coreGui:GetChildren()) do
+                    if gui:IsA("ScreenGui") or gui:IsA("Folder") then
+                        scanGui(gui)
+                    end
                 end
             end
-        end
-    end)
+        end)
+    end
 
     return found
 end
@@ -281,6 +309,12 @@ local function postCheck(myGen)
     task.wait(CONFIG.PostCheckDelay)
     if myGen ~= State.PostCheckGen then return end
     if State.IsHopping or State.IsScanning or State.TeleportPending then return end
+
+    if State.TeleportFailedFlag then
+        State.TeleportFailedFlag = false
+        State.NeedHop = true
+        return
+    end
 
     local count = #Players:GetPlayers()
     if count > 2 then
@@ -315,6 +349,7 @@ local function performHop()
     State.IsScanning = true
     State.NeedHop = false
     State.IsTopOne = false
+    State.TeleportFailedFlag = false
 
     local target = findServer()
 
@@ -333,6 +368,7 @@ local function performHop()
     State.IsScanning = false
     State.IsHopping = true
     State.TeleportPending = true
+    State.CurrentTargetId = target.id
     State.Blacklist[target.id] = tick()
 
     local success = false
@@ -344,10 +380,22 @@ local function performHop()
         task.wait(1.5)
     end
 
+    if success then
+        local startTime = tick()
+        while tick() - startTime < CONFIG.TeleportTimeout do
+            if State.TeleportFailedFlag then
+                success = false
+                break
+            end
+            task.wait(0.3)
+        end
+    end
+
     State.TeleportPending = false
     State.IsHopping = false
+    State.CurrentTargetId = nil
 
-    if success then
+    if success and not State.TeleportFailedFlag then
         State.PostCheckGen = State.PostCheckGen + 1
         local myGen = State.PostCheckGen
         task.spawn(function()
@@ -355,6 +403,7 @@ local function performHop()
         end)
         return true
     else
+        State.TeleportFailedFlag = false
         State.FailCount = State.FailCount + 1
         notify("Vào fail · thử lại " .. CONFIG.RetryDelay .. "s", 3)
         task.wait(CONFIG.RetryDelay)
@@ -370,7 +419,7 @@ local function startLeaderboardMonitor()
         if State.IsHopping or State.IsScanning or State.TeleportPending then return end
 
         local now = tick()
-        if now - State.LastLeaderboardCheck < CONFIG.LeaderboardCheckDelay then return end
+        if now - State.LastLeaderboardCheck < CONFIG.LeaderboardCheckInterval then return end
         State.LastLeaderboardCheck = now
 
         if #Players:GetPlayers() <= 2 then
@@ -384,7 +433,7 @@ local function startLeaderboardMonitor()
                 if State.IsTopOne then
                     State.IsTopOne = false
                 end
-                notify("Không top 1 speed · dò lại", 3)
+                notify("Không top 1 · dò lại", 3)
                 State.NeedHop = true
             end
         end
@@ -419,8 +468,23 @@ local function startMainLoop()
     task.spawn(function()
         while true do
             task.wait(1)
-            if not State.AutoEnabled then continue end
-            if State.IsHopping or State.IsScanning or State.TeleportPending then continue end
+
+            if not State.AutoEnabled then
+                continue
+            end
+
+            if State.IsHopping or State.IsScanning or State.TeleportPending then
+                State.StuckTimer = (State.StuckTimer or 0) + 1
+                if State.StuckTimer > 30 then
+                    resetState()
+                    State.StuckTimer = 0
+                    notify("Reset · dò lại", 3)
+                    State.NeedHop = true
+                end
+                continue
+            end
+
+            State.StuckTimer = 0
 
             if State.NeedHop then
                 performHop()
