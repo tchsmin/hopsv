@@ -33,23 +33,48 @@ if not http then
     return
 end
 
-local Blacklist = {}
-local IsScanning = false
-local IsHopping = false
-local AutoEnabled = true
-local MonitorConn = nil
-local LastPlayerCount = 0
-local TeleportPending = false
-local NeedHop = false
-local CountdownGen = 0
-local PostCheckGen = 0
-
 local CONFIG = {
     MaxTotalAllowed = 2,
     AutoHopDelay = 3,
     PostCheckDelay = 4,
-    RetryDelay = 4,
+    RetryDelay = 5,
+    ScanPages = 15,
+    PassDelay = 2,
+    ConfirmDelay = 1,
+    BlacklistTTL = 90,
+    MaxBlacklist = 200,
+    RequestRetries = 3,
 }
+
+local State = {
+    Blacklist = {},
+    IsScanning = false,
+    IsHopping = false,
+    AutoEnabled = true,
+    MonitorConn = nil,
+    LastPlayerCount = 0,
+    TeleportPending = false,
+    NeedHop = false,
+    CountdownGen = 0,
+    PostCheckGen = 0,
+    FailCount = 0,
+    LoopRunning = false,
+}
+
+local function cleanBlacklist()
+    local now = tick()
+    local count = 0
+    for id, t in pairs(State.Blacklist) do
+        if now - t > CONFIG.BlacklistTTL then
+            State.Blacklist[id] = nil
+        else
+            count = count + 1
+        end
+    end
+    if count > CONFIG.MaxBlacklist then
+        State.Blacklist = {}
+    end
+end
 
 local function requestPage(cursor)
     if not http then return nil end
@@ -57,43 +82,48 @@ local function requestPage(cursor)
         "https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100&cursor=%s",
         PLACE_ID, cursor or ""
     )
-    local ok, res = pcall(function()
-        return http({ Url = url, Method = "GET", Headers = { ["Accept"] = "application/json" } })
-    end)
-    if not ok or not res then return nil end
-    local body = res.Body or res.body
-    if type(body) ~= "string" or #body == 0 then return nil end
-    local ok2, data = pcall(function()
-        return HttpService:JSONDecode(body)
-    end)
-    if not ok2 or type(data) ~= "table" then return nil end
-    return data
+    for attempt = 1, CONFIG.RequestRetries do
+        local ok, res = pcall(function()
+            return http({ Url = url, Method = "GET", Headers = { ["Accept"] = "application/json" } })
+        end)
+        if ok and res then
+            local body = res.Body or res.body
+            if type(body) == "string" and #body > 0 then
+                local ok2, data = pcall(function()
+                    return HttpService:JSONDecode(body)
+                end)
+                if ok2 and type(data) == "table" and type(data.data) == "table" then
+                    return data
+                end
+            end
+        end
+        task.wait(0.3 * attempt)
+    end
+    return nil
 end
 
 local function scanPass(maxPlayers, maxPages)
     local result = {}
     local cursor = ""
     local pages = 0
-    local totalScanned = 0
 
     while pages < maxPages do
         local data = requestPage(cursor)
-        if not data or not data.data then break end
+        if not data then break end
 
         local cnt = 0
         for _, s in ipairs(data.data) do
             cnt = cnt + 1
-            totalScanned = totalScanned + 1
             local pc = tonumber(s.playing) or 0
             local id = s.id
-            if pc >= 1 and pc <= maxPlayers then
-                if id ~= JOB_ID and not Blacklist[id] then
+            if type(id) == "string" and id ~= JOB_ID and not State.Blacklist[id] then
+                if pc >= 1 and pc <= maxPlayers then
                     result[id] = {
                         id = id,
                         ping = tonumber(s.ping) or 999,
                         fps = tonumber(s.fps) or 60,
                         playing = pc,
-                        max = tonumber(s.maxPlayers) or 12
+                        max = tonumber(s.maxPlayers) or 12,
                     }
                 end
             end
@@ -107,18 +137,14 @@ local function scanPass(maxPlayers, maxPages)
         task.wait(0.02)
     end
 
-    return result, totalScanned
+    return result
 end
 
 local function calculateScore(server, stabilityBonus)
     local playerScore = 0
-    if server.playing == 1 then
-        playerScore = 100
-    elseif server.playing == 2 then
-        playerScore = 40
-    elseif server.playing == 3 then
-        playerScore = 10
-    end
+    if server.playing == 1 then playerScore = 100
+    elseif server.playing == 2 then playerScore = 40
+    elseif server.playing == 3 then playerScore = 10 end
     local fpsScore = math.max(0, 60 - server.fps) * 1.5
     local pingScore = math.min(server.ping, 500) / 5
     local stabilityScore = stabilityBonus * 60
@@ -149,7 +175,7 @@ end
 local function findServer()
     notify("Đang tìm server", 3)
 
-    local pass1 = select(1, scanPass(2, 12))
+    local pass1 = scanPass(2, CONFIG.ScanPages)
 
     local count1 = 0
     for _ in pairs(pass1) do count1 = count1 + 1 end
@@ -158,9 +184,9 @@ local function findServer()
         return nil
     end
 
-    task.wait(2.5)
+    task.wait(CONFIG.PassDelay)
 
-    local pass2 = select(1, scanPass(2, 12))
+    local pass2 = scanPass(2, CONFIG.ScanPages)
 
     local stable = {}
     for id, s in pairs(pass2) do
@@ -180,7 +206,11 @@ local function findServer()
         end
     end
 
-    task.wait(1.5)
+    if #stable == 0 then
+        return nil
+    end
+
+    task.wait(CONFIG.ConfirmDelay)
 
     local finalPool = {}
     for _, s in ipairs(stable) do
@@ -214,41 +244,46 @@ end
 
 local function postCheck(myGen)
     task.wait(CONFIG.PostCheckDelay)
-    if myGen ~= PostCheckGen then return end
-    if IsHopping or IsScanning or TeleportPending then return end
+    if myGen ~= State.PostCheckGen then return end
+    if State.IsHopping or State.IsScanning or State.TeleportPending then return end
 
     local count = #Players:GetPlayers()
     if count > CONFIG.MaxTotalAllowed then
-        notify("Lỗi, bắt đầu dò lại", 3)
-        NeedHop = true
+        notify("Server đông · dò lại", 3)
+        State.NeedHop = true
     else
         notify("OK · server " .. count .. " người", 3)
+        State.NeedHop = false
+        State.FailCount = 0
     end
 end
 
-function performHop()
-    if IsScanning or IsHopping then return false end
+local function performHop()
+    if State.IsScanning or State.IsHopping then return false end
 
-    IsScanning = true
-    NeedHop = false
+    cleanBlacklist()
+
+    State.IsScanning = true
+    State.NeedHop = false
 
     local target = findServer()
 
     if not target then
-        IsScanning = false
-        notify("Lỗi, bắt đầu dò lại", 3)
+        State.IsScanning = false
+        State.FailCount = State.FailCount + 1
+        notify("Không có server · thử lại sau " .. CONFIG.RetryDelay .. "s", 3)
         task.wait(CONFIG.RetryDelay)
         return false
     end
 
-    notify("Vào server " .. target.playing .. " người · FPS" .. target.fps .. " · P" .. target.ping, 3)
+    notify("Vào " .. target.playing .. " người · FPS" .. target.fps .. " · P" .. target.ping, 3)
 
     task.wait(0.3)
 
-    IsScanning = false
-    IsHopping = true
-    TeleportPending = true
-    Blacklist[target.id] = tick()
+    State.IsScanning = false
+    State.IsHopping = true
+    State.TeleportPending = true
+    State.Blacklist[target.id] = tick()
 
     local success = false
     for attempt = 1, 2 do
@@ -259,61 +294,62 @@ function performHop()
         task.wait(1.5)
     end
 
-    TeleportPending = false
-    IsHopping = false
+    State.TeleportPending = false
+    State.IsHopping = false
 
     if success then
-        PostCheckGen = PostCheckGen + 1
-        local myGen = PostCheckGen
+        State.PostCheckGen = State.PostCheckGen + 1
+        local myGen = State.PostCheckGen
         task.spawn(function()
             postCheck(myGen)
         end)
         return true
     else
-        notify("Lỗi, bắt đầu dò lại", 3)
+        State.FailCount = State.FailCount + 1
+        notify("Vào fail · thử lại " .. CONFIG.RetryDelay .. "s", 3)
         task.wait(CONFIG.RetryDelay)
         return false
     end
 end
 
 local function triggerCountdown()
-    CountdownGen = CountdownGen + 1
-    local myGen = CountdownGen
+    State.CountdownGen = State.CountdownGen + 1
+    local myGen = State.CountdownGen
 
     task.spawn(function()
         for i = CONFIG.AutoHopDelay, 1, -1 do
-            if myGen ~= CountdownGen then return end
-            if not AutoEnabled then return end
-            if IsHopping or IsScanning then return end
+            if myGen ~= State.CountdownGen then return end
+            if not State.AutoEnabled then return end
+            if State.IsHopping or State.IsScanning then return end
 
             local cnt = #Players:GetPlayers()
             if cnt <= CONFIG.MaxTotalAllowed then
-                NeedHop = false
+                State.NeedHop = false
                 return
             end
 
             task.wait(1)
         end
 
-        if myGen ~= CountdownGen then return end
-        if IsHopping or IsScanning then return end
+        if myGen ~= State.CountdownGen then return end
+        if State.IsHopping or State.IsScanning then return end
         if #Players:GetPlayers() > CONFIG.MaxTotalAllowed then
-            NeedHop = true
+            State.NeedHop = true
         end
     end)
 end
 
 local function startMonitor()
-    if MonitorConn then MonitorConn:Disconnect() end
-    MonitorConn = RunService.Heartbeat:Connect(function()
-        if not AutoEnabled then return end
-        if IsHopping or IsScanning or TeleportPending then return end
+    if State.MonitorConn then State.MonitorConn:Disconnect() end
+    State.MonitorConn = RunService.Heartbeat:Connect(function()
+        if not State.AutoEnabled then return end
+        if State.IsHopping or State.IsScanning or State.TeleportPending then return end
 
         local count = #Players:GetPlayers()
-        if count == LastPlayerCount then return end
+        if count == State.LastPlayerCount then return end
 
-        local oldCount = LastPlayerCount
-        LastPlayerCount = count
+        local oldCount = State.LastPlayerCount
+        State.LastPlayerCount = count
 
         if count > CONFIG.MaxTotalAllowed then
             if oldCount <= CONFIG.MaxTotalAllowed then
@@ -322,37 +358,46 @@ local function startMonitor()
             triggerCountdown()
         else
             if oldCount > CONFIG.MaxTotalAllowed then
-                CountdownGen = CountdownGen + 1
-                NeedHop = false
+                State.CountdownGen = State.CountdownGen + 1
+                State.NeedHop = false
             end
         end
     end)
 end
 
-task.spawn(function()
-    while true do
-        task.wait(1)
-        if not AutoEnabled then continue end
-        if IsHopping or IsScanning or TeleportPending then continue end
+local function startMainLoop()
+    if State.LoopRunning then return end
+    State.LoopRunning = true
 
-        if #Players:GetPlayers() > CONFIG.MaxTotalAllowed then
-            NeedHop = true
+    task.spawn(function()
+        while true do
+            task.wait(1)
+
+            if not State.AutoEnabled then continue end
+            if State.IsHopping or State.IsScanning or State.TeleportPending then continue end
+
+            local count = #Players:GetPlayers()
+
+            if count > CONFIG.MaxTotalAllowed then
+                State.NeedHop = true
+            end
+
+            if State.NeedHop then
+                performHop()
+            end
         end
+    end)
+end
 
-        if NeedHop then
-            performHop()
-        end
-    end
-end)
-
-LastPlayerCount = #Players:GetPlayers()
+State.LastPlayerCount = #Players:GetPlayers()
 startMonitor()
+startMainLoop()
 
 notify("Script sẵn sàng", 4)
 
 task.spawn(function()
     task.wait(2)
     if #Players:GetPlayers() > CONFIG.MaxTotalAllowed then
-        NeedHop = true
+        State.NeedHop = true
     end
 end)
