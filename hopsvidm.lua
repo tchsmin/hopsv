@@ -1,4 +1,4 @@
-local VERSION = "PHANTOM v13.2.3"
+local VERSION = "PHANTOM v13.2.4"
 local SCRIPT_NAME = "PHANTOM ⚡"
 
 if not game:IsLoaded() then game.Loaded:Wait() end
@@ -119,13 +119,6 @@ end
 
 local function isBlacklisted(jobId)
     return Blacklist[jobId] == true
-end
-
-local function inQueue(jobId)
-    for _, s in ipairs(Queue) do
-        if s.JobId == jobId then return true end
-    end
-    return false
 end
 
 local function sortQueue()
@@ -338,6 +331,10 @@ local function teleportToServer(jobId)
     return ok
 end
 
+local function getPlayerCount()
+    return #Players:GetPlayers()
+end
+
 local function hopToServer(server)
     if not server or not server.JobId then return false end
     if State.IsHopping then return false end
@@ -377,24 +374,37 @@ local function findCandidate()
     return nil
 end
 
-local function tryHop()
+local function tryHop(forceManual)
     if State.IsHopping then return end
+
+    if not forceManual then
+        local nowCount = getPlayerCount()
+        if nowCount <= 2 then
+            State.Status = "Server " .. nowCount .. " người, không hop"
+            log("info", "Bỏ qua hop: server chỉ có " .. nowCount .. " người")
+            return
+        end
+    end
+
     if State.IsScanning then
         State.Status = "Đang chờ scan..."
         return
     end
+
     local candidate = findCandidate()
     if not candidate then
         State.Status = "Chưa có server cổ, scan lại"
         task.spawn(scanServers)
         return
     end
+
     for i = #Queue, 1, -1 do
         if Queue[i].JobId == candidate.JobId then
             table.remove(Queue, i)
             break
         end
     end
+
     local ok = hopToServer(candidate)
     if not ok then
         addBlacklist(candidate.JobId)
@@ -406,10 +416,6 @@ local function tryHop()
             log("warn", "Reset blacklist")
         end
     end
-end
-
-local function getPlayerCount()
-    return #Players:GetPlayers()
 end
 
 local function buildUI()
@@ -611,7 +617,7 @@ UI.HopButton.MouseButton1Click:Connect(function()
     State.Status = "Đang dò server..."
     task.spawn(function()
         scanServers()
-        tryHop()
+        tryHop(true)
     end)
 end)
 
@@ -657,19 +663,25 @@ local function monitorLoop()
             if countdownActive then
                 if playerCount <= 2 then
                     countdownActive = false
-                    State.Status = "Đang chạy"
-                    log("info", "Hủy countdown, người rời")
+                    State.Status = "Server " .. playerCount .. " người, hủy hop"
+                    log("info", "Hủy countdown, server còn " .. playerCount .. " người")
                 else
                     countdownRemaining = countdownRemaining - 1
                     if countdownRemaining <= 0 then
                         countdownActive = false
-                        State.Status = "Bắt đầu hop"
-                        log("info", "Countdown xong, bắt đầu hop")
-                        if #Queue < 2 then
-                            task.spawn(scanServers)
-                            task.wait(1)
+                        local finalCount = getPlayerCount()
+                        if finalCount <= 2 then
+                            State.Status = "Server " .. finalCount .. " người, không hop"
+                            log("info", "Bỏ hop: server còn " .. finalCount .. " người")
+                        else
+                            State.Status = "Bắt đầu hop"
+                            log("info", "Countdown xong, bắt đầu hop")
+                            if #Queue < 2 then
+                                task.spawn(scanServers)
+                                task.wait(1)
+                            end
+                            tryHop()
                         end
-                        tryHop()
                     else
                         State.Status = "Đang đếm ngược " .. countdownRemaining .. "s"
                     end
