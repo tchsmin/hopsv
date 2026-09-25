@@ -1,4 +1,4 @@
-local VERSION = "PHANTOM v13.2.6"
+local VERSION = "PHANTOM v13.3.0"
 local SCRIPT_NAME = "PHANTOM ⚡"
 
 if not game:IsLoaded() then game.Loaded:Wait() end
@@ -81,18 +81,21 @@ local State = {
     Status = "Đang khởi động",
     Delay = 3,
     ScanSpeed = 0,
+    TotalScans = 0,
 }
 
 local Queue = {}
 local Blacklist = {}
 local Logs = {}
-local MAX_PAGES = 20
-local MAX_QUEUE = 20
+local MAX_PAGES = 50
+local MAX_QUEUE = 30
 local SCAN_TIMEOUT = 40
-local HOP_TIMEOUT = 15
-local BLACKLIST_MAX = 80
+local HOP_TIMEOUT = 20
+local BLACKLIST_MAX = 150
 local SCAN_DELAY = 0.02
 local PASS_DELAY = 2
+local TOTAL_PASSES = 4
+local MIN_STABILITY = 3
 
 local function log(level, msg)
     local entry = string.format("[%s][%s] %s", os.date("%H:%M:%S"), level, msg)
@@ -175,7 +178,7 @@ local function scanBranch(branchId, sortOrder, result)
             local jobId = safeStr(srv.id, "")
             local playing = safeNum(srv.playing, 0)
             if jobId ~= "" and jobId ~= game.JobId then
-                if playing >= 1 and playing <= 2 then
+                if playing == 1 then
                     if not isBlacklisted(jobId) then
                         result[jobId] = {
                             id = jobId,
@@ -227,51 +230,54 @@ local function scanOnePass(passTag)
 end
 
 local function calculateScore(server, stability)
-    local playerScore = 0
-    if server.playing == 1 then
-        playerScore = 10000
-    elseif server.playing == 2 then
-        playerScore = 100
-    end
+    local playerScore = 100000
 
     local fpsScore = 0
-    if server.fps <= 10 then
-        fpsScore = 3000
+    if server.fps <= 5 then
+        fpsScore = 8000
+    elseif server.fps <= 10 then
+        fpsScore = 6000
     elseif server.fps <= 20 then
-        fpsScore = 2000
+        fpsScore = 4000
     elseif server.fps <= 30 then
-        fpsScore = 1200
+        fpsScore = 2000
     elseif server.fps <= 45 then
-        fpsScore = 600
+        fpsScore = 800
     elseif server.fps <= 55 then
         fpsScore = 200
     else
-        fpsScore = math.max(0, 60 - server.fps) * 5
+        fpsScore = 0
     end
 
     local pingScore = 0
-    if server.ping >= 400 then
-        pingScore = 2500
-    elseif server.ping >= 250 then
-        pingScore = 1800
-    elseif server.ping >= 150 then
-        pingScore = 1000
-    elseif server.ping >= 80 then
-        pingScore = 400
+    if server.ping >= 500 then
+        pingScore = 6000
+    elseif server.ping >= 400 then
+        pingScore = 5000
+    elseif server.ping >= 300 then
+        pingScore = 3500
+    elseif server.ping >= 200 then
+        pingScore = 2000
+    elseif server.ping >= 100 then
+        pingScore = 800
     else
-        pingScore = math.min(server.ping, 500) / 2
+        pingScore = 0
     end
 
-    local stabilityScore = stability * 1000
+    local stabilityScore = stability * 5000
 
     local slotScore = 0
     local fillRate = server.playing / math.max(server.max, 1)
-    if fillRate <= 0.1 then
-        slotScore = 1500
+    if fillRate <= 0.08 then
+        slotScore = 5000
+    elseif fillRate <= 0.1 then
+        slotScore = 3500
+    elseif fillRate <= 0.15 then
+        slotScore = 2000
     elseif fillRate <= 0.2 then
         slotScore = 800
     else
-        slotScore = 300
+        slotScore = 200
     end
 
     return playerScore + fpsScore + pingScore + stabilityScore + slotScore
@@ -284,77 +290,88 @@ local function scanServers()
     State.Status = "Đang dò server..."
     State.FoundCount = 0
     Queue = {}
-    log("info", "Bắt đầu scan 3 pass")
+    State.TotalScans = State.TotalScans + 1
+    log("info", "Bắt đầu scan " .. TOTAL_PASSES .. " pass - lần " .. State.TotalScans)
 
     local startTime = tick()
     local startSeen = State.SeenCount
 
-    local pass1 = scanOnePass("P1")
-    local count1 = 0
-    for _ in pairs(pass1) do count1 = count1 + 1 end
-    log("info", "Pass 1: " .. count1 .. " server")
-
-    State.Status = "Đang phân tích..."
-    task.wait(PASS_DELAY)
-    if not State.IsScanning then State.IsScanning = false return end
-
-    local pass2 = scanOnePass("P2")
-    local count2 = 0
-    for _ in pairs(pass2) do count2 = count2 + 1 end
-    log("info", "Pass 2: " .. count2 .. " server")
-
-    State.Status = "Đang xác nhận..."
-    task.wait(PASS_DELAY)
-    if not State.IsScanning then State.IsScanning = false return end
-
-    local pass3 = scanOnePass("P3")
-    local count3 = 0
-    for _ in pairs(pass3) do count3 = count3 + 1 end
-    log("info", "Pass 3: " .. count3 .. " server")
+    local passes = {}
+    for i = 1, TOTAL_PASSES do
+        State.Status = "Đang dò pass " .. i .. "/" .. TOTAL_PASSES
+        passes[i] = scanOnePass("P" .. i)
+        local cnt = 0
+        for _ in pairs(passes[i]) do cnt = cnt + 1 end
+        log("info", "Pass " .. i .. ": " .. cnt .. " server 1 người")
+        if i < TOTAL_PASSES then
+            State.Status = "Đang phân tích..."
+            task.wait(PASS_DELAY)
+            if not State.IsScanning then State.IsScanning = false return end
+        end
+    end
 
     State.Status = "Đang chấm điểm..."
     task.wait(0.3)
 
     local merged = {}
-    for id, s in pairs(pass1) do
-        local stability = 1
-        local p2 = pass2[id]
-        local p3 = pass3[id]
-        if p2 and p3 then
-            if p2.playing == s.playing and p3.playing == s.playing then
-                stability = 3
+    for id, s in pairs(passes[1]) do
+        local passCount = 1
+        local samePlaying = true
+        local maxPing = s.ping
+        local minFps = s.fps
+        for i = 2, TOTAL_PASSES do
+            local pi = passes[i][id]
+            if pi then
+                passCount = passCount + 1
+                if pi.playing ~= s.playing then
+                    samePlaying = false
+                end
+                if pi.ping > maxPing then maxPing = pi.ping end
+                if pi.fps < minFps then minFps = pi.fps end
             else
-                stability = 2
+                samePlaying = false
             end
-        elseif p2 or p3 then
-            stability = 2
         end
-        if p2 then
-            s.ping = math.max(s.ping, p2.ping)
-            s.fps = math.min(s.fps, p2.fps)
+
+        local stability = passCount
+        if not samePlaying then
+            stability = math.max(1, passCount - 1)
         end
-        if p3 then
-            s.ping = math.max(s.ping, p3.ping)
-            s.fps = math.min(s.fps, p3.fps)
-        end
+
+        s.ping = maxPing
+        s.fps = minFps
         s.stability = stability
         s.score = calculateScore(s, stability)
-        table.insert(merged, s)
-    end
-    for id, s in pairs(pass2) do
-        if not pass1[id] then
-            local stability = 1
-            if pass3[id] then stability = 2 end
-            s.stability = stability
-            s.score = calculateScore(s, stability)
+
+        if stability >= MIN_STABILITY then
             table.insert(merged, s)
         end
     end
-    for id, s in pairs(pass3) do
-        if not pass1[id] and not pass2[id] then
-            s.stability = 1
-            s.score = calculateScore(s, 1)
-            table.insert(merged, s)
+
+    for i = 2, TOTAL_PASSES do
+        for id, s in pairs(passes[i]) do
+            if not passes[1][id] then
+                local passCount = 1
+                local maxPing = s.ping
+                local minFps = s.fps
+                for j = 1, TOTAL_PASSES do
+                    if j ~= i then
+                        local pj = passes[j][id]
+                        if pj then
+                            passCount = passCount + 1
+                            if pj.ping > maxPing then maxPing = pj.ping end
+                            if pj.fps < minFps then minFps = pj.fps end
+                        end
+                    end
+                end
+                if passCount >= MIN_STABILITY then
+                    s.ping = maxPing
+                    s.fps = minFps
+                    s.stability = passCount
+                    s.score = calculateScore(s, passCount)
+                    table.insert(merged, s)
+                end
+            end
         end
     end
 
@@ -375,6 +392,27 @@ local function scanServers()
     State.IsScanning = false
     State.FoundCount = #Queue
     log("info", "Scan xong: " .. #Queue .. " queue, tốc độ " .. State.ScanSpeed .. " sv/s")
+end
+
+local function verifyServerOnePlayer(jobId)
+    local cursor = nil
+    local pages = 0
+    while pages < 30 do
+        if not State.IsScanning and pages > 0 then break end
+        local data, err = fetchServers(cursor, "Asc")
+        if not data then return nil end
+        for _, srv in ipairs(data.data or {}) do
+            if safeStr(srv.id, "") == jobId then
+                local playing = safeNum(srv.playing, 0)
+                if playing == 1 then return true end
+                return false
+            end
+        end
+        cursor = data.nextPageCursor
+        if not cursor or cursor == "" or cursor == "null" then break end
+        pages = pages + 1
+    end
+    return nil
 end
 
 local function teleportToServer(jobId)
@@ -406,9 +444,18 @@ local function hopToServer(server)
     if State.IsHopping then return false end
     State.IsHopping = true
     State.HopStart = tick()
-    State.Status = "Đang tạo cổng kết nối..."
-    log("info", "Vào " .. server.id .. " (score=" .. math.floor(server.score) .. " fps=" .. server.fps .. " ping=" .. server.ping .. " stab=" .. server.stability .. ")")
 
+    State.Status = "Đang xác nhận..."
+    log("info", "Verify " .. server.id .. " (score=" .. math.floor(server.score) .. " fps=" .. server.fps .. " ping=" .. server.ping .. " stab=" .. server.stability .. ")")
+    local verify = verifyServerOnePlayer(server.id)
+    if verify ~= true then
+        log("warn", "Verify fail: server không còn 1 người")
+        addBlacklist(server.id)
+        State.IsHopping = false
+        return false
+    end
+
+    State.Status = "Đang tạo cổng kết nối..."
     addBlacklist(server.id)
 
     local ok = teleportToServer(server.id)
@@ -432,22 +479,12 @@ local function hopToServer(server)
 end
 
 local function pickCandidate()
-    local onePlayer = {}
-    local twoPlayer = {}
     for _, s in ipairs(Queue) do
-        if not isBlacklisted(s.id) then
-            if s.playing == 1 then
-                table.insert(onePlayer, s)
-            elseif s.playing == 2 then
-                table.insert(twoPlayer, s)
-            end
+        if not isBlacklisted(s.id) and s.playing == 1 and s.stability >= MIN_STABILITY then
+            return s
         end
     end
-    local pool = onePlayer
-    if #pool == 0 then pool = twoPlayer end
-    if #pool == 0 then return nil end
-    local topCount = math.min(5, #pool)
-    return pool[math.random(1, topCount)]
+    return nil
 end
 
 local function tryHop(forceManual)
@@ -469,7 +506,8 @@ local function tryHop(forceManual)
 
     local candidate = pickCandidate()
     if not candidate then
-        State.Status = "Chưa có server, scan lại"
+        State.Status = "Chưa có server cổ, scan lại"
+        log("info", "Queue không có server cổ (1 người + stability " .. MIN_STABILITY .. ")")
         task.spawn(scanServers)
         return
     end
@@ -600,7 +638,7 @@ local function buildUI()
     end
 
     makeRow("Players", "Số người", 6)
-    makeRow("Found", "Found", 30)
+    makeRow("Found", "Server cổ", 30)
     makeRow("Queue", "Queue", 54)
     makeRow("Speed", "Tốc độ", 78)
     makeRow("Status", "Trạng thái", 102)
@@ -701,7 +739,7 @@ UI.CopyButton.MouseButton1Click:Connect(function()
         "[PHANTOM] " .. VERSION,
         "Số người: " .. tostring(getPlayerCount()),
         "Queue: " .. tostring(#Queue),
-        "Found: " .. tostring(State.FoundCount),
+        "Server cổ: " .. tostring(State.FoundCount),
         "Seen: " .. tostring(State.SeenCount),
         "Fails: " .. tostring(State.FailCount),
         "Tốc độ: " .. State.ScanSpeed .. " sv/s",
@@ -751,7 +789,7 @@ local function monitorLoop()
                         else
                             State.Status = "Bắt đầu hop"
                             log("info", "Countdown xong, bắt đầu hop")
-                            if #Queue < 2 then
+                            if #Queue < 3 then
                                 task.spawn(scanServers)
                                 task.wait(1)
                             end
