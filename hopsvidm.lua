@@ -9,6 +9,25 @@ local LocalPlayer = Players.LocalPlayer
 local PLACE_ID = game.PlaceId
 local JOB_ID = game.JobId
 
+local ALLOWED_PLACE_IDS = {
+    [13772394625] = true,
+    [109983668079237] = true,
+    [115484077057506] = true,
+    [135609351274353] = true,
+}
+
+local function isAllowedGame()
+    if ALLOWED_PLACE_IDS[PLACE_ID] then
+        return true
+    end
+    return false
+end
+
+if not isAllowedGame() then
+    warn("[HOP SERVER] Script chỉ hoạt động trong Steal an Egg")
+    return
+end
+
 local function getHttp()
     if http_request then return http_request end
     if request then return request end
