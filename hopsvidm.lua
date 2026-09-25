@@ -1,4 +1,4 @@
-local VERSION = "PHANTOM v13.3.4"
+local VERSION = "PHANTOM v13.3.5"
 local SCRIPT_NAME = "PHANTOM ⚡"
 
 if not game:IsLoaded() then game.Loaded:Wait() end
@@ -133,6 +133,7 @@ local State = {
     ScanSpeed = 0,
     TotalScans = 0,
     CurrentPage = 0,
+    VerifyDelay = 5,
 }
 
 local Queue = {}
@@ -142,13 +143,15 @@ local scanPending = false
 local MAX_PAGES = 40
 local MAX_QUEUE = 40
 local SCAN_TIMEOUT = 60
-local HOP_TIMEOUT = 10
+local HOP_TIMEOUT = 25
 local BLACKLIST_MAX = 200
 local PASS_DELAY = 0.2
 local TOTAL_PASSES = 3
 local MIN_STABILITY = 2
 local MAX_HOP_ATTEMPTS = 5
 local BRANCHES_PER_PASS = 5
+local VERIFY_MAX_PAGES = 30
+local VERIFY_RETRY = 3
 
 local function log(level, msg)
     local entry = string.format("[%s][%s] %s", os.date("%H:%M:%S"), level, msg)
@@ -156,7 +159,7 @@ local function log(level, msg)
     if #Logs > 50 then table.remove(Logs, 1) end
     if level == "error" or level == "warn" then
         print(entry)
-    elseif msg:find("^Scan") or msg:find("^TOP") or msg:find("Countdown") or msg:find("^Hop") or msg:find("^Pass") then
+    elseif msg:find("^Scan") or msg:find("^TOP") or msg:find("Countdown") or msg:find("^Hop") or msg:find("^Pass") or msg:find("^Verify") then
         print(entry)
     end
 end
@@ -314,7 +317,7 @@ local function scanServers()
     Queue = {}
     State.TotalScans = State.TotalScans + 1
     State.CurrentPage = 0
-    log("info", "Scan #" .. State.TotalScans .. " - " .. TOTAL_PASSES .. " pass × " .. BRANCHES_PER_PASS .. " nhánh")
+    log("info", "Scan #" .. State.TotalScans)
 
     local startTime = tick()
     local startSeen = State.SeenCount
@@ -325,7 +328,7 @@ local function scanServers()
         passes[i] = scanOnePass("P" .. i)
         local cnt = 0
         for _ in pairs(passes[i]) do cnt = cnt + 1 end
-        log("info", "Pass " .. i .. ": " .. cnt .. " server 1 người")
+        log("info", "Pass " .. i .. ": " .. cnt)
         if i < TOTAL_PASSES then
             task.wait(PASS_DELAY)
             if not State.IsScanning then scanPending = false return end
@@ -349,10 +352,7 @@ local function scanServers()
     end
 
     local merged = {}
-    local totalFound = 0
-    local passCountFilter = 0
     for _, info in pairs(seenIds) do
-        totalFound = totalFound + 1
         if info.count >= MIN_STABILITY then
             local s = info.ref
             s.ping = info.maxPing
@@ -360,7 +360,6 @@ local function scanServers()
             s.stability = info.count
             s.score = calculateScore(s, info.count)
             table.insert(merged, s)
-            passCountFilter = passCountFilter + 1
         end
     end
 
@@ -386,25 +385,42 @@ local function scanServers()
         end
         log("info", "TOP3:" .. msg)
     end
-    log("info", "Scan " .. #Queue .. " queue (raw " .. totalFound .. ", filter " .. passCountFilter .. "), " .. State.ScanSpeed .. " sv/s, 429=" .. RequestPool.hits429)
+    log("info", "Scan " .. #Queue .. " queue, " .. State.ScanSpeed .. " sv/s")
 end
 
 local function verifyServerOnePlayer(jobId)
-    local cursor = nil
-    local pages = 0
-    while pages < 15 do
-        local data = fetchServers(cursor, "Asc")
-        if not data then return nil end
-        for _, srv in ipairs(data.data or {}) do
-            if safeStr(srv.id, "") == jobId then
-                local playing = safeNum(srv.playing, 0)
-                if playing == 1 then return true end
-                return false
+    for retry = 1, VERIFY_RETRY do
+        local cursor = nil
+        local pages = 0
+        local found = false
+        local playingFinal = -1
+        while pages < VERIFY_MAX_PAGES do
+            local data = fetchServers(cursor, "Asc")
+            if not data then
+                found = false
+                break
             end
+            for _, srv in ipairs(data.data or {}) do
+                if safeStr(srv.id, "") == jobId then
+                    playingFinal = safeNum(srv.playing, -1)
+                    found = true
+                    break
+                end
+            end
+            if found then break end
+            cursor = data.nextPageCursor
+            if not cursor or cursor == "" or cursor == "null" then break end
+            pages = pages + 1
         end
-        cursor = data.nextPageCursor
-        if not cursor or cursor == "" or cursor == "null" then break end
-        pages = pages + 1
+
+        if found then
+            log("info", "Verify retry " .. retry .. ": playing=" .. playingFinal)
+            if playingFinal == 1 then return true end
+            if playingFinal >= 2 then return false end
+        else
+            log("warn", "Verify retry " .. retry .. ": không thấy server trong " .. pages .. " trang")
+        end
+        task.wait(1)
     end
     return nil
 end
@@ -437,19 +453,43 @@ local function hopToServer(server)
     State.IsHopping = true
     State.HopStart = tick()
 
-    State.Status = "Đang xác nhận..."
+    State.Status = "Đợi " .. State.VerifyDelay .. "s xác định server..."
+    log("info", "Chờ " .. State.VerifyDelay .. "s trước verify " .. server.id)
+    task.wait(State.VerifyDelay)
+
+    if getPlayerCount() > 0 then
+        local nowPC = getPlayerCount()
+        if nowPC >= 3 and not State.Auto then
+            State.Status = "Server đông, hủy"
+            State.IsHopping = false
+            return false
+        end
+    end
+
+    State.Status = "Đang xác định server..."
+    log("info", "Verify " .. server.id .. " (score=" .. math.floor(server.score) .. ")")
     local verify = verifyServerOnePlayer(server.id)
+
     if verify == false then
+        log("warn", "Server " .. server.id .. " đã đầy → blacklist")
+        addBlacklist(server.id)
+        State.IsHopping = false
+        return false
+    end
+    if verify == nil then
+        log("warn", "Không tìm thấy " .. server.id .. " trong " .. (VERIFY_MAX_PAGES * VERIFY_RETRY) .. " trang → blacklist")
         addBlacklist(server.id)
         State.IsHopping = false
         return false
     end
 
     State.Status = "Đang tạo cổng kết nối..."
+    log("info", "Verify OK, teleport " .. server.id)
     addBlacklist(server.id)
 
     local ok = teleportToServer(server.id)
     if not ok then
+        log("error", "Teleport fail")
         State.FailCount = State.FailCount + 1
         State.ConsecutiveFails = State.ConsecutiveFails + 1
         if State.ConsecutiveFails >= 10 then
