@@ -37,17 +37,18 @@ end
 local http = getHttp()
 
 local CONFIG = {
-    PageDelay = 0.05,
-    PassDelay = 0.3,
+    PageDelay = 0.03,
+    PassDelay = 0.4,
+    ConfirmDelay = 0.25,
     PreTeleportDelay = 0.1,
-    MaxPages = 20,
-    ParallelBranches = 3,
+    MaxPages = 30,
+    ParallelBranches = 4,
     AutoHopDelay = 3,
     MaxTotalAllowed = 2,
-    TeleportTimeout = 10,
+    MaxPlayerFilter = 2,
+    MinPlayerFilter = 1,
+    TeleportTimeout = 12,
     MaxTeleportAttempts = 3,
-    MaxSearchAttempts = 4,
-    RetrySearchDelay = 2,
 }
 
 local Blacklist = {}
@@ -58,11 +59,8 @@ local TargetTotal = nil
 local MonitorConn = nil
 local LastPlayerCount = 0
 local TeleportPending = false
-local HopQueue = false
 
-pcall(function()
-    if CoreGui:FindFirstChild("PhantomUI") then CoreGui.PhantomUI:Destroy() end
-end)
+if CoreGui:FindFirstChild("PhantomUI") then CoreGui.PhantomUI:Destroy() end
 
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "PhantomUI"
@@ -70,10 +68,7 @@ ScreenGui.ResetOnSpawn = false
 ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 ScreenGui.IgnoreGuiInset = true
 ScreenGui.DisplayOrder = 999999
-pcall(function() ScreenGui.Parent = CoreGui end)
-if not ScreenGui.Parent then
-    ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
-end
+ScreenGui.Parent = CoreGui
 
 local Main = Instance.new("Frame")
 Main.Size = UDim2.new(0, 200, 0, 108)
@@ -205,22 +200,18 @@ PulseCorner.Parent = DotPulse
 
 task.spawn(function()
     while ScreenGui.Parent do
-        pcall(function()
-            DotPulse.Size = UDim2.new(1, 0, 1, 0)
-            DotPulse.Position = UDim2.new(0, 0, 0, 0)
-            DotPulse.BackgroundTransparency = 0.6
-        end)
+        DotPulse.Size = UDim2.new(1, 0, 1, 0)
+        DotPulse.Position = UDim2.new(0, 0, 0, 0)
+        DotPulse.BackgroundTransparency = 0.6
         task.wait(1)
-        pcall(function()
-            DotPulse:TweenSizeAndPosition(
-                UDim2.new(3, 0, 3, 0),
-                UDim2.new(-1, 0, -1, 0),
-                Enum.EasingDirection.Out,
-                Enum.EasingStyle.Sine,
-                0.8
-            )
-            DotPulse.BackgroundTransparency = 1
-        end)
+        DotPulse:TweenSizeAndPosition(
+            UDim2.new(3, 0, 3, 0),
+            UDim2.new(-1, 0, -1, 0),
+            Enum.EasingDirection.Out,
+            Enum.EasingStyle.Sine,
+            0.8
+        )
+        DotPulse.BackgroundTransparency = 1
         task.wait(0.8)
     end
 end)
@@ -248,45 +239,38 @@ StatusValue.TextXAlignment = Enum.TextXAlignment.Right
 StatusValue.Parent = StatusRow
 
 local function setStatus(text, color, state)
-    pcall(function()
-        StatusLabel.Text = text
-        StatusValue.Text = state or ""
-        StatusValue.TextColor3 = color or Color3.fromRGB(120, 255, 160)
-        StatusDot.BackgroundColor3 = color or Color3.fromRGB(60, 220, 120)
-        DotPulse.BackgroundColor3 = color or Color3.fromRGB(60, 220, 120)
-    end)
+    StatusLabel.Text = text
+    StatusValue.Text = state or ""
+    StatusValue.TextColor3 = color or Color3.fromRGB(120, 255, 160)
+    StatusDot.BackgroundColor3 = color or Color3.fromRGB(60, 220, 120)
+    DotPulse.BackgroundColor3 = color or Color3.fromRGB(60, 220, 120)
 end
 
 local function updatePlayerCount()
     local count = #Players:GetPlayers()
-    pcall(function()
-        PlayerValue.Text = tostring(count)
-        if count <= 2 then
-            PlayerValue.TextColor3 = Color3.fromRGB(120, 255, 160)
-        else
-            PlayerValue.TextColor3 = Color3.fromRGB(255, 120, 120)
-        end
-    end)
+    PlayerValue.Text = tostring(count)
+    if count <= 2 then
+        PlayerValue.TextColor3 = Color3.fromRGB(120, 255, 160)
+    else
+        PlayerValue.TextColor3 = Color3.fromRGB(255, 120, 120)
+    end
     return count
 end
 
-Players.PlayerAdded:Connect(function()
-    task.wait(0.2)
-    updatePlayerCount()
-end)
-Players.PlayerRemoving:Connect(function()
-    task.wait(0.4)
-    updatePlayerCount()
-end)
+Players.PlayerAdded:Connect(function() task.wait(0.2) updatePlayerCount() end)
+Players.PlayerRemoving:Connect(function() task.wait(0.4) updatePlayerCount() end)
 
 local function requestPage(cursor)
     if not http then return nil end
-    local cursorParam = type(cursor) == "string" and cursor or ""
+    local cursorParam = cursor
+    if type(cursorParam) ~= "string" or cursorParam == "" then
+        cursorParam = ""
+    end
     local url = string.format(
         "https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100&cursor=%s",
         PLACE_ID, cursorParam
     )
-    for _ = 1, 2 do
+    for attempt = 1, 2 do
         local ok, res = pcall(function()
             return http({ Url = url, Method = "GET", Headers = { ["Accept"] = "application/json" } })
         end)
@@ -301,18 +285,21 @@ local function requestPage(cursor)
                 end
             end
         end
-        task.wait(0.1)
+        task.wait(0.15)
     end
     return nil
 end
 
-local function extractServers(data, targetPlaying, result)
-    if not data or type(data.data) ~= "table" then return end
+local function collectFromData(data, targetPlaying, result, lockRef)
+    if not data or type(data.data) ~= "table" then return 0 end
+    local added = 0
     for _, s in ipairs(data.data) do
         if type(s) == "table" then
             local pc = tonumber(s.playing) or 0
             local id = s.id
             if type(id) == "string" and id ~= JOB_ID and not Blacklist[id] and pc == targetPlaying then
+                while lockRef[1] do task.wait() end
+                lockRef[1] = true
                 if not result[id] then
                     result[id] = {
                         id = id,
@@ -321,115 +308,105 @@ local function extractServers(data, targetPlaying, result)
                         playing = pc,
                         max = tonumber(s.maxPlayers) or 12,
                     }
+                    added = added + 1
                 end
+                lockRef[1] = false
             end
         end
     end
+    return added
 end
 
 local function parallelScan(targetPlaying)
     local result = {}
+    local lockRef = {false}
 
     local first = requestPage("")
     if not first then return result end
-    extractServers(first, targetPlaying, result)
+    collectFromData(first, targetPlaying, result, lockRef)
 
-    local cursors = {}
-    local currentCursor = first.nextPageCursor
-    if not currentCursor or currentCursor == "" or currentCursor == "null" then
+    local rootCursor = first.nextPageCursor
+    if not rootCursor or rootCursor == "" or rootCursor == "null" or type(rootCursor) ~= "string" then
         return result
     end
 
-    table.insert(cursors, currentCursor)
+    local branchCursors = { rootCursor }
     for i = 1, CONFIG.ParallelBranches - 1 do
-        if cursors[i] then
-            local d = requestPage(cursors[i])
-            if d then
-                extractServers(d, targetPlaying, result)
-                local nc = d.nextPageCursor
-                if nc and nc ~= "" and nc ~= "null" then
-                    table.insert(cursors, nc)
+        local cur = branchCursors[i]
+        if cur then
+            local data = requestPage(cur)
+            if data then
+                collectFromData(data, targetPlaying, result, lockRef)
+                if data.nextPageCursor and data.nextPageCursor ~= "" and data.nextPageCursor ~= "null" then
+                    branchCursors[i + 1] = data.nextPageCursor
                 else
                     break
                 end
-            else
-                break
             end
         end
     end
 
-    local pagesPerBranch = math.max(2, math.floor(CONFIG.MaxPages / math.max(1, #cursors)))
+    local activeBranches = {}
+    for i = 1, CONFIG.ParallelBranches do
+        if branchCursors[i] then
+            table.insert(activeBranches, branchCursors[i])
+        end
+    end
 
-    for idx = 1, #cursors do
-        local startCursor = cursors[idx]
-        task.spawn(function()
+    if #activeBranches == 0 then
+        return result
+    end
+
+    local pagesPerBranch = math.max(2, math.floor(CONFIG.MaxPages / #activeBranches))
+    local threads = {}
+
+    for idx = 1, #activeBranches do
+        local startCursor = activeBranches[idx]
+        table.insert(threads, task.spawn(function()
             local cursor = startCursor
             local pages = 0
-            local fails = 0
+            local failCount = 0
             while pages < pagesPerBranch do
                 local data = requestPage(cursor)
                 if not data then
-                    fails = fails + 1
-                    if fails >= 2 then break end
-                    task.wait(0.15)
+                    failCount = failCount + 1
+                    if failCount >= 2 then break end
+                    task.wait(0.2)
                 else
-                    fails = 0
-                    extractServers(data, targetPlaying, result)
+                    failCount = 0
+                    collectFromData(data, targetPlaying, result, lockRef)
                     local nc = data.nextPageCursor
-                    if not nc or nc == "" or nc == "null" then break end
+                    if not nc or nc == "" or nc == "null" or type(nc) ~= "string" then break end
                     cursor = nc
                     pages = pages + 1
                     if CONFIG.PageDelay > 0 then task.wait(CONFIG.PageDelay) end
                 end
             end
-        end)
+        end))
     end
 
-    task.wait(2)
+    local startTime = tick()
+    while tick() - startTime < 6 do
+        local allDone = true
+        for _, t in ipairs(threads) do
+            local status = coroutine.status(t)
+            if status ~= "dead" then
+                allDone = false
+                break
+            end
+        end
+        if allDone then break end
+        task.wait(0.05)
+    end
 
     return result
 end
 
-local function scoreServer(server, stability)
+local function calculateScore(server, stabilityBonus)
     local fpsScore = math.max(0, 60 - server.fps) * 2
     local pingScore = math.min(server.ping, 500) / 4
-    local stabilityScore = stability * 100
+    local stabilityScore = stabilityBonus * 100
     return 1000 + fpsScore + pingScore + stabilityScore
-end
-
-local function pickBest(pool)
-    if not pool or #pool == 0 then return nil end
-    table.sort(pool, function(a, b)
-        if a.stability ~= b.stability then
-            return a.stability > b.stability
-        end
-        return a.score > b.score
-    end)
-    return pool[1]
-end
-
-local function buildStablePool(pass1, pass2)
-    local stable = {}
-    for id, s2 in pairs(pass2) do
-        local s1 = pass1[id]
-        if s1 then
-            s2.stability = 2
-            if s1.playing == s2.playing then
-                s2.stability = 3
-            end
-            table.insert(stable, s2)
-        end
-    end
-    if #stable == 0 then
-        for _, s in pairs(pass1) do
-            s.stability = 1
-            table.insert(stable, s)
-        end
-    end
-    for _, s in ipairs(stable) do
-        s.score = scoreServer(s, s.stability)
-    end
-    return stable
 end
 
 local function attemptTeleport(jobId)
@@ -438,132 +415,233 @@ local function attemptTeleport(jobId)
         opts.ServerInstanceId = jobId
         TeleportService:TeleportAsync(PLACE_ID, {LocalPlayer}, opts)
     end)
-    if ok1 then return true end
+    if ok1 then return true, "async" end
 
     local ok2 = pcall(function()
         TeleportService:TeleportToPlaceInstance(PLACE_ID, jobId, LocalPlayer)
     end)
-    if ok2 then return true end
+    if ok2 then return true, "place3" end
 
     local ok3 = pcall(function()
         TeleportService:TeleportToPlaceInstance(PLACE_ID, jobId)
     end)
-    return ok3
+    if ok3 then return true, "place2" end
+
+    return false, nil
 end
 
-local function teleportAndVerify(target)
+local function verifyServerExists(jobId)
+    if not http then return true end
+    local cursor = ""
+    local pages = 0
+    while pages < 8 do
+        local data = requestPage(cursor)
+        if not data then return true end
+        if type(data.data) == "table" then
+            for _, s in ipairs(data.data) do
+                if type(s) == "table" and s.id == jobId then
+                    local pc = tonumber(s.playing) or 0
+                    if pc >= 1 and pc <= CONFIG.MaxPlayerFilter then
+                        return true
+                    end
+                    return false
+                end
+            end
+        end
+        local nc = data.nextPageCursor
+        if not nc or nc == "" or nc == "null" then break end
+        cursor = nc
+        pages = pages + 1
+    end
+    return true
+end
+
+local function teleportWithVerify(target)
     if not target or type(target.id) ~= "string" then
-        return false
+        return false, "invalid_target"
+    end
+
+    local verified = false
+    for _ = 1, 2 do
+        if verifyServerExists(target.id) then
+            verified = true
+            break
+        end
+        task.wait(0.3)
+    end
+
+    if not verified then
+        Blacklist[target.id] = true
+        return false, "verify_fail"
     end
 
     TeleportPending = true
     local originalJob = game.JobId
 
-    if not attemptTeleport(target.id) then
+    local ok, method = attemptTeleport(target.id)
+    if not ok then
         TeleportPending = false
         Blacklist[target.id] = true
-        return false
+        return false, "teleport_call_fail"
     end
 
-    local deadline = tick() + CONFIG.TeleportTimeout
-    while tick() < deadline do
+    local startTime = tick()
+    while tick() - startTime < CONFIG.TeleportTimeout do
         if game.JobId ~= originalJob then
             TeleportPending = false
-            return true
+            return true, method
         end
-        task.wait(0.25)
+        task.wait(0.3)
     end
 
     TeleportPending = false
     Blacklist[target.id] = true
-    return false
+    return false, "stuck"
 end
 
-local function findServerFor(targetPlaying)
-    local pass1 = parallelScan(targetPlaying)
+local function scanForOnePlayer()
+    local pass1 = parallelScan(1)
     local count1 = 0
     for _ in pairs(pass1) do count1 = count1 + 1 end
-    if count1 == 0 then return nil end
+
+    if count1 == 0 then
+        task.wait(0.3)
+        local pass1b = parallelScan(2)
+        local count1b = 0
+        for _ in pairs(pass1b) do count1b = count1b + 1 end
+        if count1b == 0 then return nil, nil end
+
+        task.wait(CONFIG.PassDelay)
+        local pass2b = parallelScan(2)
+
+        local stableB = {}
+        for id, s in pairs(pass2b) do
+            if pass1b[id] then
+                s.stability = 2
+                if s.playing == pass1b[id].playing then
+                    s.stability = 3
+                end
+                table.insert(stableB, s)
+            end
+        end
+
+        if #stableB == 0 then
+            for id, s in pairs(pass1b) do
+                s.stability = 1
+                table.insert(stableB, s)
+            end
+        end
+
+        task.wait(CONFIG.ConfirmDelay)
+        local finalPoolB = {}
+        for _, s in ipairs(stableB) do
+            s.score = calculateScore(s, s.stability)
+            table.insert(finalPoolB, s)
+        end
+
+        table.sort(finalPoolB, function(a, b)
+            if a.stability ~= b.stability then
+                return a.stability > b.stability
+            end
+            return a.score > b.score
+        end)
+
+        if #finalPoolB == 0 then return nil, nil end
+        local topCount = math.min(5, #finalPoolB)
+        return finalPoolB[math.random(1, topCount)], "2"
+    end
 
     task.wait(CONFIG.PassDelay)
 
-    local pass2 = parallelScan(targetPlaying)
+    local pass2 = parallelScan(1)
 
-    local pool = buildStablePool(pass1, pass2)
-    if #pool == 0 then return nil end
-
-    return pickBest(pool)
-end
-
-local function searchAndHop()
-    for attempt = 1, CONFIG.MaxSearchAttempts do
-        if not AutoEnabled then return false end
-
-        setStatus("Quét 1 người · lần " .. attempt, Color3.fromRGB(255, 200, 100), "...")
-
-        local target = findServerFor(1)
-
-        if not target then
-            setStatus("Quét 2 người · lần " .. attempt, Color3.fromRGB(255, 200, 100), "...")
-            target = findServerFor(2)
-        end
-
-        if target then
-            setStatus("Đang vào server...", Color3.fromRGB(120, 255, 160), "HOP")
-            task.wait(CONFIG.PreTeleportDelay)
-
-            TargetTotal = target.playing + 1
-            Blacklist[target.id] = true
-
-            for _ = 1, CONFIG.MaxTeleportAttempts do
-                if teleportAndVerify(target) then
-                    return true
-                end
-                task.wait(0.8)
+    local stable = {}
+    for id, s in pairs(pass2) do
+        if pass1[id] then
+            s.stability = 2
+            if s.playing == pass1[id].playing then
+                s.stability = 3
             end
-
-            setStatus("Vào fail · thử server khác", Color3.fromRGB(255, 180, 100), "RETRY")
-            task.wait(1)
-        else
-            setStatus("Không tìm thấy · chờ " .. CONFIG.RetrySearchDelay .. "s", Color3.fromRGB(255, 180, 100), "WAIT")
-            task.wait(CONFIG.RetrySearchDelay)
+            table.insert(stable, s)
         end
     end
 
-    return false
+    if #stable == 0 then
+        for id, s in pairs(pass1) do
+            s.stability = 1
+            table.insert(stable, s)
+        end
+    end
+
+    task.wait(CONFIG.ConfirmDelay)
+
+    local finalPool = {}
+    for _, s in ipairs(stable) do
+        s.score = calculateScore(s, s.stability)
+        table.insert(finalPool, s)
+    end
+
+    table.sort(finalPool, function(a, b)
+        if a.stability ~= b.stability then
+            return a.stability > b.stability
+        end
+        return a.score > b.score
+    end)
+
+    if #finalPool == 0 then return nil, nil end
+    local topCount = math.min(5, #finalPool)
+    return finalPool[math.random(1, topCount)], "1"
 end
 
 local function performHop()
-    if IsScanning or IsHopping then
-        HopQueue = true
-        return
-    end
+    if IsScanning or IsHopping then return end
+    IsScanning = true
 
-    IsHopping = true
-    setStatus("Bắt đầu hop...", Color3.fromRGB(255, 200, 100), "...")
+    setStatus("Đang quét server...", Color3.fromRGB(255, 200, 100), "...")
 
     if not http then
-        IsHopping = false
-        setStatus("Không có HTTP", Color3.fromRGB(255, 100, 100), "OFF")
+        IsScanning = false
+        setStatus("Lỗi HTTP", Color3.fromRGB(255, 100, 100), "OFF")
         return
     end
 
-    local success = searchAndHop()
+    local target, targetMode = scanForOnePlayer()
 
-    IsHopping = false
-
-    if success then
-        setStatus("Đã vào server mới", Color3.fromRGB(120, 255, 160), "ON")
-    else
-        setStatus("Không tìm được · nghỉ 5s", Color3.fromRGB(255, 120, 120), "FAIL")
+    if not target then
+        IsScanning = false
+        setStatus("Không có server", Color3.fromRGB(255, 120, 120), "FAIL")
         task.wait(5)
         setStatus("Đang chạy", Color3.fromRGB(120, 255, 160), "ON")
+        return
     end
 
-    if HopQueue then
-        HopQueue = false
-        task.wait(0.5)
-        task.spawn(performHop)
+    local modeText = targetMode == "1" and "1 người" or "2 người"
+    setStatus("Vào server " .. modeText, Color3.fromRGB(120, 255, 160), "HOP")
+
+    task.wait(CONFIG.PreTeleportDelay)
+
+    IsScanning = false
+    IsHopping = true
+    TargetTotal = target.playing + 1
+    Blacklist[target.id] = true
+
+    local success = false
+    for attempt = 1, CONFIG.MaxTeleportAttempts do
+        local ok = teleportWithVerify(target)
+        if ok then
+            success = true
+            break
+        end
+        task.wait(1)
+    end
+
+    IsHopping = false
+    if success then
+        setStatus("Đang chạy", Color3.fromRGB(120, 255, 160), "ON")
+    else
+        setStatus("Vào thất bại · thử lại", Color3.fromRGB(255, 180, 100), "RETRY")
+        task.wait(2)
+        performHop()
     end
 end
 
@@ -571,21 +649,18 @@ local function startMonitor()
     if MonitorConn then MonitorConn:Disconnect() end
     MonitorConn = RunService.Heartbeat:Connect(function()
         if not AutoEnabled then return end
-        if IsHopping or TeleportPending then return end
+        if IsHopping or IsScanning or TeleportPending then return end
 
         local count = #Players:GetPlayers()
         if count == LastPlayerCount then return end
         LastPlayerCount = count
 
         if count > CONFIG.MaxTotalAllowed then
-            setStatus("Có " .. count .. " người · chờ " .. CONFIG.AutoHopDelay .. "s", Color3.fromRGB(255, 200, 120), "...")
+            setStatus("Server " .. count .. " người · chờ " .. CONFIG.AutoHopDelay .. "s", Color3.fromRGB(255, 200, 120), "...")
 
             task.spawn(function()
                 for i = CONFIG.AutoHopDelay, 1, -1 do
-                    if not AutoEnabled then
-                        setStatus("Auto tắt", Color3.fromRGB(160, 160, 180), "OFF")
-                        return
-                    end
+                    if not AutoEnabled then return end
                     local cnt = #Players:GetPlayers()
                     if cnt <= CONFIG.MaxTotalAllowed then
                         setStatus("Đã về " .. cnt .. " người", Color3.fromRGB(120, 255, 160), "ON")
@@ -633,16 +708,6 @@ UserInputService.InputEnded:Connect(function(input)
     end
 end)
 
-pcall(function()
-    LocalPlayer.OnTeleport:Connect(function(state)
-        if state == Enum.TeleportState.Started then
-            TeleportPending = true
-        elseif state == Enum.TeleportState.Failed then
-            TeleportPending = false
-        end
-    end)
-end)
-
 updatePlayerCount()
 setStatus("Đang chạy", Color3.fromRGB(120, 255, 160), "ON")
 startMonitor()
@@ -654,5 +719,3 @@ task.spawn(function()
         performHop()
     end
 end)
-
-print("[HOP SERVER] Đã load thành công")
