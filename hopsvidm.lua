@@ -19,25 +19,26 @@ end
 local http = getHttp()
 
 local CONFIG = {
-    PassDelay = 0.3,
-    ConfirmDelay = 0.2,
-    PreTeleportDelay = 0.15,
-    MaxPages = 50,
-    ParallelBranches = 6,
-    LoopWait = 1.2,
-    TeleportWait = 4,
-    TargetPlaying = 1,
-    FallbackPlaying = 2,
+    PassDelay = 0.25,
+    ConfirmDelay = 0.15,
+    PreTeleportDelay = 0.1,
+    MaxPages = 80,
+    ParallelBranches = 8,
+    LoopWait = 1,
+    TeleportWait = 3,
 }
 
 local Blacklist = {}
 local IsRunning = true
-local LastRender = 0
-local DebugInfo = {
-    totalSeen = 0,
-    byPlaying = {},
-    lastPool = 0,
-    attempts = 0,
+
+local Debug = {
+    seen = 0,
+    pool = 0,
+    attempt = 0,
+    dist = {},
+    ascSeen = 0,
+    descSeen = 0,
+    lastMode = "",
 }
 
 if CoreGui:FindFirstChild("PhantomUI") then CoreGui.PhantomUI:Destroy() end
@@ -51,128 +52,55 @@ ScreenGui.DisplayOrder = 999999
 ScreenGui.Parent = CoreGui
 
 local Main = Instance.new("Frame")
-Main.Size = UDim2.new(0, 240, 0, 175)
-Main.Position = UDim2.new(0, 20, 0.5, -87)
+Main.Size = UDim2.new(0, 250, 0, 195)
+Main.Position = UDim2.new(0, 20, 0.5, -97)
 Main.BackgroundColor3 = Color3.fromRGB(13, 15, 22)
 Main.BorderSizePixel = 0
 Main.Active = true
 Main.ClipsDescendants = true
 Main.Parent = ScreenGui
 
-local MainCorner = Instance.new("UICorner")
-MainCorner.CornerRadius = UDim.new(0, 14)
-MainCorner.Parent = Main
+local MC = Instance.new("UICorner")
+MC.CornerRadius = UDim.new(0, 14)
+MC.Parent = Main
 
-local Glow = Instance.new("Frame")
-Glow.Size = UDim2.new(1, 16, 1, 16)
-Glow.Position = UDim2.new(0, -8, 0, -8)
-Glow.BackgroundColor3 = Color3.fromRGB(120, 80, 255)
-Glow.BackgroundTransparency = 0.92
-Glow.BorderSizePixel = 0
-Glow.ZIndex = 0
-Glow.Parent = Main
-
-local GlowCorner = Instance.new("UICorner")
-GlowCorner.CornerRadius = UDim.new(0, 20)
-GlowCorner.Parent = Glow
+local BGrad = Instance.new("UIGradient")
+BGrad.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(13, 15, 22)),
+    ColorSequenceKeypoint.new(1, Color3.fromRGB(18, 14, 28))
+})
+BGrad.Rotation = 135
+BGrad.Parent = Main
 
 local Border = Instance.new("UIStroke")
 Border.Thickness = 1.5
-Border.Transparency = 0.15
+Border.Transparency = 0.1
 Border.Parent = Main
 
-local BorderGrad = Instance.new("UIGradient")
-BorderGrad.Color = ColorSequence.new({
+local BG = Instance.new("UIGradient")
+BG.Color = ColorSequence.new({
     ColorSequenceKeypoint.new(0, Color3.fromRGB(120, 80, 255)),
     ColorSequenceKeypoint.new(0.5, Color3.fromRGB(80, 180, 255)),
     ColorSequenceKeypoint.new(1, Color3.fromRGB(200, 100, 255))
 })
-BorderGrad.Rotation = 45
-BorderGrad.Parent = Border
+BG.Rotation = 45
+BG.Parent = Border
 
 task.spawn(function()
     while ScreenGui.Parent do
-        BorderGrad.Rotation = BorderGrad.Rotation + 2
+        BG.Rotation = BG.Rotation + 3
         task.wait(0.05)
     end
 end)
 
 local TopBar = Instance.new("Frame")
-TopBar.Size = UDim2.new(1, 0, 0, 38)
+TopBar.Size = UDim2.new(1, 0, 0, 42)
 TopBar.BackgroundTransparency = 1
 TopBar.Parent = Main
 
-local StatusPill = Instance.new("Frame")
-StatusPill.Size = UDim2.new(0, 66, 0, 22)
-StatusPill.Position = UDim2.new(1, -78, 0, 8)
-StatusPill.BackgroundColor3 = Color3.fromRGB(24, 40, 30)
-StatusPill.BorderSizePixel = 0
-StatusPill.Parent = TopBar
-
-local SPillC = Instance.new("UICorner")
-SPillC.CornerRadius = UDim.new(1, 0)
-SPillC.Parent = StatusPill
-
-local SPillStroke = Instance.new("UIStroke")
-SPillStroke.Color = Color3.fromRGB(60, 220, 120)
-SPillStroke.Thickness = 1
-SPillStroke.Transparency = 0.3
-SPillStroke.Parent = StatusPill
-
-local PillDot = Instance.new("Frame")
-PillDot.Size = UDim2.new(0, 6, 0, 6)
-PillDot.Position = UDim2.new(0, 9, 0.5, -3)
-PillDot.BackgroundColor3 = Color3.fromRGB(60, 220, 120)
-PillDot.BorderSizePixel = 0
-PillDot.Parent = StatusPill
-
-local PDotC = Instance.new("UICorner")
-PDotC.CornerRadius = UDim.new(1, 0)
-PDotC.Parent = PillDot
-
-local DotPulse = Instance.new("Frame")
-DotPulse.Size = UDim2.new(1, 0, 1, 0)
-DotPulse.BackgroundColor3 = Color3.fromRGB(60, 220, 120)
-DotPulse.BackgroundTransparency = 0.6
-DotPulse.BorderSizePixel = 0
-DotPulse.Parent = PillDot
-
-local DPulseC = Instance.new("UICorner")
-DPulseC.CornerRadius = UDim.new(1, 0)
-DPulseC.Parent = DotPulse
-
-task.spawn(function()
-    while ScreenGui.Parent do
-        DotPulse.Size = UDim2.new(1, 0, 1, 0)
-        DotPulse.Position = UDim2.new(0, 0, 0, 0)
-        DotPulse.BackgroundTransparency = 0.6
-        task.wait(1)
-        DotPulse:TweenSizeAndPosition(
-            UDim2.new(3, 0, 3, 0),
-            UDim2.new(-1, 0, -1, 0),
-            Enum.EasingDirection.Out,
-            Enum.EasingStyle.Sine,
-            0.8
-        )
-        DotPulse.BackgroundTransparency = 1
-        task.wait(0.8)
-    end
-end)
-
-local PillText = Instance.new("TextLabel")
-PillText.Size = UDim2.new(1, -20, 1, 0)
-PillText.Position = UDim2.new(0, 20, 0, 0)
-PillText.BackgroundTransparency = 1
-PillText.Text = "ON"
-PillText.TextColor3 = Color3.fromRGB(140, 255, 180)
-PillText.Font = Enum.Font.GothamBold
-PillText.TextSize = 9
-PillText.TextXAlignment = Enum.TextXAlignment.Left
-PillText.Parent = StatusPill
-
 local LogoBox = Instance.new("Frame")
-LogoBox.Size = UDim2.new(0, 28, 0, 28)
-LogoBox.Position = UDim2.new(0, 12, 0, 5)
+LogoBox.Size = UDim2.new(0, 30, 0, 30)
+LogoBox.Position = UDim2.new(0, 12, 0, 6)
 LogoBox.BackgroundColor3 = Color3.fromRGB(40, 30, 70)
 LogoBox.BorderSizePixel = 0
 LogoBox.Parent = TopBar
@@ -195,12 +123,12 @@ LogoIcon.BackgroundTransparency = 1
 LogoIcon.Text = "⚡"
 LogoIcon.TextColor3 = Color3.fromRGB(255, 255, 255)
 LogoIcon.Font = Enum.Font.GothamBold
-LogoIcon.TextSize = 15
+LogoIcon.TextSize = 16
 LogoIcon.Parent = LogoBox
 
 local Title = Instance.new("TextLabel")
-Title.Size = UDim2.new(1, -130, 0, 16)
-Title.Position = UDim2.new(0, 46, 0, 8)
+Title.Size = UDim2.new(1, -140, 0, 16)
+Title.Position = UDim2.new(0, 50, 0, 9)
 Title.BackgroundTransparency = 1
 Title.Text = "PHANTOM"
 Title.TextColor3 = Color3.fromRGB(240, 245, 255)
@@ -210,107 +138,159 @@ Title.TextXAlignment = Enum.TextXAlignment.Left
 Title.Parent = TopBar
 
 local Subtitle = Instance.new("TextLabel")
-Subtitle.Size = UDim2.new(1, -130, 0, 11)
-Subtitle.Position = UDim2.new(0, 46, 0, 23)
+Subtitle.Size = UDim2.new(1, -140, 0, 11)
+Subtitle.Position = UDim2.new(0, 50, 0, 24)
 Subtitle.BackgroundTransparency = 1
-Subtitle.Text = "auto hop · solo 1 người"
+Subtitle.Text = "auto hop · scan toàn bộ"
 Subtitle.TextColor3 = Color3.fromRGB(130, 140, 180)
 Subtitle.Font = Enum.Font.Gotham
 Subtitle.TextSize = 9
 Subtitle.TextXAlignment = Enum.TextXAlignment.Left
 Subtitle.Parent = TopBar
 
-local Divider = Instance.new("Frame")
-Divider.Size = UDim2.new(1, -24, 0, 1)
-Divider.Position = UDim2.new(0, 12, 0, 42)
-Divider.BackgroundColor3 = Color3.fromRGB(30, 34, 48)
-Divider.BorderSizePixel = 0
-Divider.Parent = Main
+local Pill = Instance.new("Frame")
+Pill.Size = UDim2.new(0, 68, 0, 22)
+Pill.Position = UDim2.new(1, -80, 0, 10)
+Pill.BackgroundColor3 = Color3.fromRGB(24, 40, 30)
+Pill.BorderSizePixel = 0
+Pill.Parent = TopBar
 
-local function makeCard(yPos)
-    local card = Instance.new("Frame")
-    card.Size = UDim2.new(1, -24, 0, 28)
-    card.Position = UDim2.new(0, 12, 0, yPos)
-    card.BackgroundColor3 = Color3.fromRGB(20, 23, 32)
-    card.BorderSizePixel = 0
-    card.Parent = Main
+local PC = Instance.new("UICorner")
+PC.CornerRadius = UDim.new(1, 0)
+PC.Parent = Pill
+
+local PS = Instance.new("UIStroke")
+PS.Color = Color3.fromRGB(60, 220, 120)
+PS.Thickness = 1
+PS.Transparency = 0.3
+PS.Parent = Pill
+
+local PDot = Instance.new("Frame")
+PDot.Size = UDim2.new(0, 6, 0, 6)
+PDot.Position = UDim2.new(0, 10, 0.5, -3)
+PDot.BackgroundColor3 = Color3.fromRGB(60, 220, 120)
+PDot.BorderSizePixel = 0
+PDot.Parent = Pill
+
+local PDC = Instance.new("UICorner")
+PDC.CornerRadius = UDim.new(1, 0)
+PDC.Parent = PDot
+
+local DPulse = Instance.new("Frame")
+DPulse.Size = UDim2.new(1, 0, 1, 0)
+DPulse.BackgroundColor3 = Color3.fromRGB(60, 220, 120)
+DPulse.BackgroundTransparency = 0.6
+DPulse.BorderSizePixel = 0
+DPulse.Parent = PDot
+
+local DPC = Instance.new("UICorner")
+DPC.CornerRadius = UDim.new(1, 0)
+DPC.Parent = DPulse
+
+task.spawn(function()
+    while ScreenGui.Parent do
+        DPulse.Size = UDim2.new(1, 0, 1, 0)
+        DPulse.Position = UDim2.new(0, 0, 0, 0)
+        DPulse.BackgroundTransparency = 0.6
+        task.wait(1)
+        DPulse:TweenSizeAndPosition(
+            UDim2.new(3, 0, 3, 0),
+            UDim2.new(-1, 0, -1, 0),
+            Enum.EasingDirection.Out,
+            Enum.EasingStyle.Sine,
+            0.8
+        )
+        DPulse.BackgroundTransparency = 1
+        task.wait(0.8)
+    end
+end)
+
+local PText = Instance.new("TextLabel")
+PText.Size = UDim2.new(1, -22, 1, 0)
+PText.Position = UDim2.new(0, 22, 0, 0)
+PText.BackgroundTransparency = 1
+PText.Text = "ON"
+PText.TextColor3 = Color3.fromRGB(140, 255, 180)
+PText.Font = Enum.Font.GothamBold
+PText.TextSize = 9
+PText.TextXAlignment = Enum.TextXAlignment.Left
+PText.Parent = Pill
+
+local Div = Instance.new("Frame")
+Div.Size = UDim2.new(1, -24, 0, 1)
+Div.Position = UDim2.new(0, 12, 0, 46)
+Div.BackgroundColor3 = Color3.fromRGB(30, 34, 48)
+Div.BorderSizePixel = 0
+Div.Parent = Main
+
+local function makeRow(y, labelText, iconText)
+    local row = Instance.new("Frame")
+    row.Size = UDim2.new(1, -24, 0, 26)
+    row.Position = UDim2.new(0, 12, 0, y)
+    row.BackgroundColor3 = Color3.fromRGB(20, 23, 32)
+    row.BorderSizePixel = 0
+    row.Parent = Main
     local c = Instance.new("UICorner")
-    c.CornerRadius = UDim.new(0, 7)
-    c.Parent = card
-    return card
+    c.CornerRadius = UDim.new(0, 6)
+    c.Parent = row
+    local icon = Instance.new("TextLabel")
+    icon.Size = UDim2.new(0, 24, 1, 0)
+    icon.Position = UDim2.new(0, 6, 0, 0)
+    icon.BackgroundTransparency = 1
+    icon.Text = iconText
+    icon.TextSize = 12
+    icon.Parent = row
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, -100, 1, 0)
+    lbl.Position = UDim2.new(0, 32, 0, 0)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = labelText
+    lbl.TextColor3 = Color3.fromRGB(160, 170, 200)
+    lbl.Font = Enum.Font.Gotham
+    lbl.TextSize = 10
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Parent = row
+    local val = Instance.new("TextLabel")
+    val.Size = UDim2.new(0, 60, 1, 0)
+    val.Position = UDim2.new(1, -66, 0, 0)
+    val.BackgroundTransparency = 1
+    val.Text = "0"
+    val.TextColor3 = Color3.fromRGB(120, 180, 255)
+    val.Font = Enum.Font.GothamBold
+    val.TextSize = 12
+    val.TextXAlignment = Enum.TextXAlignment.Right
+    val.Parent = row
+    return row, val
 end
 
-local PlayersCard = makeCard(50)
-local PlayerIcon = Instance.new("TextLabel")
-PlayerIcon.Size = UDim2.new(0, 26, 1, 0)
-PlayerIcon.Position = UDim2.new(0, 6, 0, 0)
-PlayerIcon.BackgroundTransparency = 1
-PlayerIcon.Text = "👥"
-PlayerIcon.TextSize = 13
-PlayerIcon.Parent = PlayersCard
+local _, PlayerValue = makeRow(54, "Số người", "👥")
+local _, FoundValue = makeRow(84, "Pool tìm được", "🎯")
+local _, DistValue = makeRow(114, "Server 1 người", "🔍")
 
-local PlayerText = Instance.new("TextLabel")
-PlayerText.Size = UDim2.new(1, -100, 1, 0)
-PlayerText.Position = UDim2.new(0, 34, 0, 0)
-PlayerText.BackgroundTransparency = 1
-PlayerText.Text = "Số người"
-PlayerText.TextColor3 = Color3.fromRGB(160, 170, 200)
-PlayerText.Font = Enum.Font.Gotham
-PlayerText.TextSize = 10
-PlayerText.TextXAlignment = Enum.TextXAlignment.Left
-PlayerText.Parent = PlayersCard
-
-local PlayerValue = Instance.new("TextLabel")
-PlayerValue.Size = UDim2.new(0, 60, 1, 0)
-PlayerValue.Position = UDim2.new(1, -66, 0, 0)
-PlayerValue.BackgroundTransparency = 1
-PlayerValue.Text = "1"
 PlayerValue.TextColor3 = Color3.fromRGB(120, 255, 160)
-PlayerValue.Font = Enum.Font.GothamBold
-PlayerValue.TextSize = 13
-PlayerValue.TextXAlignment = Enum.TextXAlignment.Right
-PlayerValue.Parent = PlayersCard
+FoundValue.TextColor3 = Color3.fromRGB(120, 200, 255)
+DistValue.TextColor3 = Color3.fromRGB(255, 200, 120)
 
-local FoundCard = makeCard(82)
-local FoundIcon = Instance.new("TextLabel")
-FoundIcon.Size = UDim2.new(0, 26, 1, 0)
-FoundIcon.Position = UDim2.new(0, 6, 0, 0)
-FoundIcon.BackgroundTransparency = 1
-FoundIcon.Text = "🎯"
-FoundIcon.TextSize = 13
-FoundIcon.Parent = FoundCard
+local StatusFrame = Instance.new("Frame")
+StatusFrame.Size = UDim2.new(1, -24, 0, 24)
+StatusFrame.Position = UDim2.new(0, 12, 0, 144)
+StatusFrame.BackgroundColor3 = Color3.fromRGB(25, 20, 40)
+StatusFrame.BorderSizePixel = 0
+StatusFrame.Parent = Main
 
-local FoundText = Instance.new("TextLabel")
-FoundText.Size = UDim2.new(1, -100, 1, 0)
-FoundText.Position = UDim2.new(0, 34, 0, 0)
-FoundText.BackgroundTransparency = 1
-FoundText.Text = "Server tìm được"
-FoundText.TextColor3 = Color3.fromRGB(160, 170, 200)
-FoundText.Font = Enum.Font.Gotham
-FoundText.TextSize = 10
-FoundText.TextXAlignment = Enum.TextXAlignment.Left
-FoundText.Parent = FoundCard
+local SFC = Instance.new("UICorner")
+SFC.CornerRadius = UDim.new(0, 6)
+SFC.Parent = StatusFrame
 
-local FoundValue = Instance.new("TextLabel")
-FoundValue.Size = UDim2.new(0, 60, 1, 0)
-FoundValue.Position = UDim2.new(1, -66, 0, 0)
-FoundValue.BackgroundTransparency = 1
-FoundValue.Text = "0"
-FoundValue.TextColor3 = Color3.fromRGB(120, 180, 255)
-FoundValue.Font = Enum.Font.GothamBold
-FoundValue.TextSize = 13
-FoundValue.TextXAlignment = Enum.TextXAlignment.Right
-FoundValue.Parent = FoundCard
-
-local StatusCard = makeCard(114)
 local StatusIcon = Instance.new("TextLabel")
-StatusIcon.Size = UDim2.new(0, 26, 1, 0)
-StatusIcon.Position = UDim2.new(0, 6, 0, 0)
+StatusIcon.Size = UDim2.new(0, 24, 1, 0)
+StatusIcon.Position = UDim2.new(0, 4, 0, 0)
 StatusIcon.BackgroundTransparency = 1
 StatusIcon.Text = "◐"
-StatusIcon.TextColor3 = Color3.fromRGB(120, 200, 255)
+StatusIcon.TextColor3 = Color3.fromRGB(140, 180, 255)
 StatusIcon.TextSize = 13
-StatusIcon.Parent = StatusCard
+StatusIcon.Font = Enum.Font.GothamBold
+StatusIcon.Parent = StatusFrame
 
 task.spawn(function()
     local frames = {"◐", "◓", "◑", "◒"}
@@ -319,26 +299,26 @@ task.spawn(function()
         StatusIcon.Text = frames[i]
         i = i + 1
         if i > #frames then i = 1 end
-        task.wait(0.2)
+        task.wait(0.15)
     end
 end)
 
 local StatusText = Instance.new("TextLabel")
-StatusText.Size = UDim2.new(1, -20, 1, 0)
-StatusText.Position = UDim2.new(0, 34, 0, 0)
+StatusText.Size = UDim2.new(1, -32, 1, 0)
+StatusText.Position = UDim2.new(0, 30, 0, 0)
 StatusText.BackgroundTransparency = 1
 StatusText.Text = "Đang chạy"
-StatusText.TextColor3 = Color3.fromRGB(220, 230, 255)
+StatusText.TextColor3 = Color3.fromRGB(200, 220, 255)
 StatusText.Font = Enum.Font.GothamBold
 StatusText.TextSize = 10
 StatusText.TextXAlignment = Enum.TextXAlignment.Left
-StatusText.Parent = StatusCard
+StatusText.Parent = StatusFrame
 
 local DebugLabel = Instance.new("TextLabel")
-DebugLabel.Size = UDim2.new(1, -24, 0, 20)
-DebugLabel.Position = UDim2.new(0, 12, 0, 148)
+DebugLabel.Size = UDim2.new(1, -24, 0, 16)
+DebugLabel.Position = UDim2.new(0, 12, 0, 173)
 DebugLabel.BackgroundTransparency = 1
-DebugLabel.Text = "seen 0 | pool 0 | attempt 0"
+DebugLabel.Text = "chưa scan"
 DebugLabel.TextColor3 = Color3.fromRGB(100, 110, 140)
 DebugLabel.Font = Enum.Font.Code
 DebugLabel.TextSize = 8
@@ -349,48 +329,42 @@ local function setStatus(text, color)
     StatusText.Text = text
     if color then
         StatusText.TextColor3 = color
-        PillDot.BackgroundColor3 = color
-        DotPulse.BackgroundColor3 = color
-        SPillStroke.Color = color
+        PDot.BackgroundColor3 = color
+        DPulse.BackgroundColor3 = color
+        PS.Color = color
     end
 end
 
 local function setPill(text, color)
-    PillText.Text = text
-    PillText.TextColor3 = color or Color3.fromRGB(140, 255, 180)
-end
-
-local function updateDebug()
-    local topDist = {}
-    for p, cnt in pairs(DebugInfo.byPlaying) do
-        table.insert(topDist, {p = p, c = cnt})
+    PText.Text = text
+    PText.TextColor3 = color or Color3.fromRGB(140, 255, 180)
+    if color then
+        PDot.BackgroundColor3 = color
+        DPulse.BackgroundColor3 = color
+        PS.Color = color
     end
-    table.sort(topDist, function(a, b) return a.p < b.p end)
-
-    local parts = {}
-    for i = 1, math.min(5, #topDist) do
-        local t = topDist[i]
-        table.insert(parts, t.p .. ":" .. t.c)
-    end
-
-    DebugLabel.Text = string.format(
-        "seen %d | pool %d | try %d | %s",
-        DebugInfo.totalSeen,
-        DebugInfo.lastPool,
-        DebugInfo.attempts,
-        table.concat(parts, " ")
-    )
 end
 
 local function updatePlayerCount()
-    local count = #Players:GetPlayers()
-    PlayerValue.Text = tostring(count)
-    if count <= 2 then
-        PlayerValue.TextColor3 = Color3.fromRGB(120, 255, 160)
-    else
-        PlayerValue.TextColor3 = Color3.fromRGB(255, 120, 120)
+    local c = #Players:GetPlayers()
+    PlayerValue.Text = tostring(c)
+    PlayerValue.TextColor3 = c <= 2 and Color3.fromRGB(120, 255, 160) or Color3.fromRGB(255, 120, 120)
+    return c
+end
+
+local function updateDebug()
+    local parts = {}
+    local keys = {}
+    for k in pairs(Debug.dist) do table.insert(keys, k) end
+    table.sort(keys)
+    for i = 1, math.min(6, #keys) do
+        local k = keys[i]
+        table.insert(parts, k .. ":" .. Debug.dist[k])
     end
-    return count
+    DebugLabel.Text = string.format(
+        "seen %d | asc %d | desc %d | try %d | %s",
+        Debug.seen, Debug.ascSeen, Debug.descSeen, Debug.attempt, table.concat(parts, " ")
+    )
 end
 
 Players.PlayerAdded:Connect(function() task.wait(0.2) updatePlayerCount() end)
@@ -398,10 +372,9 @@ Players.PlayerRemoving:Connect(function() task.wait(0.4) updatePlayerCount() end
 
 local function requestPage(cursor, sortOrder)
     if not http then return nil end
-    sortOrder = sortOrder or "Asc"
     local url = string.format(
         "https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=%s&limit=100&cursor=%s",
-        PLACE_ID, sortOrder, cursor or ""
+        PLACE_ID, sortOrder or "Asc", cursor or ""
     )
     local ok, res = pcall(function()
         return http({ Url = url, Method = "GET", Headers = { ["Accept"] = "application/json" } })
@@ -416,19 +389,18 @@ local function requestPage(cursor, sortOrder)
     return data
 end
 
-local function scanOnce(targetPlaying, sortOrder)
+local function scanAll(targetPlaying, sortOrder)
     local result = {}
     local lockRef = {false}
-    DebugInfo.byPlaying = {}
+    local seenLocal = 0
 
     local function processData(data)
-        if not data or not data.data then return 0 end
-        local cnt = 0
+        if not data or not data.data then return end
         for _, s in ipairs(data.data) do
-            cnt = cnt + 1
-            DebugInfo.totalSeen = DebugInfo.totalSeen + 1
+            Debug.seen = Debug.seen + 1
+            seenLocal = seenLocal + 1
             local pc = tonumber(s.playing) or 0
-            DebugInfo.byPlaying[pc] = (DebugInfo.byPlaying[pc] or 0) + 1
+            Debug.dist[pc] = (Debug.dist[pc] or 0) + 1
 
             local id = s.id
             if id and id ~= JOB_ID and not Blacklist[id] and pc == targetPlaying then
@@ -444,16 +416,15 @@ local function scanOnce(targetPlaying, sortOrder)
                 lockRef[1] = false
             end
         end
-        return cnt
     end
 
     local first = requestPage("", sortOrder)
-    if not first then return result end
+    if not first then return result, 0 end
     processData(first)
 
     local rootCursor = first.nextPageCursor
     if not rootCursor or rootCursor == "" or rootCursor == "null" then
-        return result
+        return result, seenLocal
     end
 
     local pagesPerBranch = math.floor(CONFIG.MaxPages / math.max(1, CONFIG.ParallelBranches))
@@ -493,52 +464,59 @@ local function scanOnce(targetPlaying, sortOrder)
     for _ = 1, #threads do task.wait(0.05) end
     task.wait(0.1)
 
-    return result
+    return result, seenLocal
 end
 
-local function calculateScore(server, stabilityBonus)
-    local fpsScore = math.max(0, 60 - server.fps) * 3
-    local pingScore = math.min(server.ping, 500) / 3
-    local stabilityScore = stabilityBonus * 150
-    return 1000 + fpsScore + pingScore + stabilityScore
+local function calculateScore(s, stability)
+    local fps = math.max(0, 60 - s.fps) * 3
+    local ping = math.min(s.ping, 500) / 3
+    return 1000 + fps + ping + stability * 150
 end
 
 local function fastTeleport(jobId)
-    local success = false
-    pcall(function()
+    local ok1 = pcall(function()
         local opts = Instance.new("TeleportOptions")
         opts.ServerInstanceId = jobId
         TeleportService:TeleportAsync(PLACE_ID, {LocalPlayer}, opts)
-        success = true
     end)
-    if success then return true end
-    pcall(function()
+    if ok1 then return true end
+    local ok2 = pcall(function()
         TeleportService:TeleportToPlaceInstance(PLACE_ID, jobId, LocalPlayer)
-        success = true
     end)
-    return success
+    return ok2
 end
 
 local function findServer(targetPlaying)
-    local pass1 = scanOnce(targetPlaying, "Asc")
+    Debug.dist = {}
+    Debug.ascSeen = 0
+    Debug.descSeen = 0
+
+    local pass1Asc, ascSeen = scanAll(targetPlaying, "Asc")
+    Debug.ascSeen = ascSeen
     local count1 = 0
-    for _ in pairs(pass1) do count1 = count1 + 1 end
+    for _ in pairs(pass1Asc) do count1 = count1 + 1 end
 
     if count1 == 0 then
-        pass1 = scanOnce(targetPlaying, "Desc")
-        for _ in pairs(pass1) do count1 = count1 + 1 end
-        if count1 == 0 then return nil, DebugInfo.totalSeen end
+        local pass1Desc, descSeen = scanAll(targetPlaying, "Desc")
+        Debug.descSeen = descSeen
+        for id, s in pairs(pass1Desc) do
+            pass1Asc[id] = s
+        end
+        count1 = 0
+        for _ in pairs(pass1Asc) do count1 = count1 + 1 end
     end
+
+    if count1 == 0 then return nil end
 
     task.wait(CONFIG.PassDelay)
 
-    local pass2 = scanOnce(targetPlaying, "Asc")
+    local pass2 = scanAll(targetPlaying, "Asc")
 
     local stable = {}
     for id, s in pairs(pass2) do
-        if pass1[id] then
+        if pass1Asc[id] then
             s.stability = 2
-            if s.playing == pass1[id].playing then
+            if s.playing == pass1Asc[id].playing then
                 s.stability = 3
             end
             table.insert(stable, s)
@@ -546,7 +524,7 @@ local function findServer(targetPlaying)
     end
 
     if #stable == 0 then
-        for id, s in pairs(pass1) do
+        for _, s in pairs(pass1Asc) do
             s.stability = 1
             table.insert(stable, s)
         end
@@ -554,20 +532,20 @@ local function findServer(targetPlaying)
 
     task.wait(CONFIG.ConfirmDelay)
 
-    local finalPool = {}
+    local pool = {}
     for _, s in ipairs(stable) do
         s.score = calculateScore(s, s.stability)
-        table.insert(finalPool, s)
+        table.insert(pool, s)
     end
 
-    table.sort(finalPool, function(a, b)
+    table.sort(pool, function(a, b)
         if a.stability ~= b.stability then
             return a.stability > b.stability
         end
         return a.score > b.score
     end)
 
-    return finalPool, DebugInfo.totalSeen
+    return pool
 end
 
 local function mainLoop()
@@ -577,8 +555,8 @@ local function mainLoop()
         local count = updatePlayerCount()
 
         if count <= 2 then
-            setStatus("Server " .. count .. " người · ổn định", Color3.fromRGB(120, 255, 160))
-            setPill("ON", Color3.fromRGB(140, 255, 180))
+            setStatus("Server " .. count .. " người · ổn", Color3.fromRGB(120, 255, 160))
+            setPill("ON", Color3.fromRGB(60, 220, 120))
 
             for _ = 1, 3 do
                 if not ScreenGui.Parent then return end
@@ -588,9 +566,7 @@ local function mainLoop()
                 if count > 2 then break end
             end
 
-            if count <= 2 then
-                continue
-            end
+            if count <= 2 then continue end
         end
 
         for i = 3, 1, -1 do
@@ -601,63 +577,64 @@ local function mainLoop()
                 break
             end
             setStatus("Chờ " .. i .. "s · " .. cnt .. " người", Color3.fromRGB(255, 200, 100))
+            setPill("WAIT", Color3.fromRGB(255, 180, 100))
             task.wait(1)
         end
 
         if #Players:GetPlayers() <= 2 then continue end
 
-        DebugInfo.attempts = 0
-        local hopSuccess = false
+        Debug.attempt = 0
+        local hopped = false
 
-        while not hopSuccess and ScreenGui.Parent do
-            DebugInfo.attempts = DebugInfo.attempts + 1
-            DebugInfo.totalSeen = 0
+        while not hopped and ScreenGui.Parent do
+            Debug.attempt = Debug.attempt + 1
+            Debug.seen = 0
 
-            setStatus("Tìm server 1 người...", Color3.fromRGB(255, 200, 100))
+            setStatus("Scan lần " .. Debug.attempt, Color3.fromRGB(255, 200, 100))
             setPill("SCAN", Color3.fromRGB(255, 200, 120))
-            updateDebug()
 
             if not http then
                 setStatus("Lỗi HTTP", Color3.fromRGB(255, 100, 100))
-                setPill("OFF", Color3.fromRGB(255, 120, 120))
-                task.wait(2)
+                setPill("OFF", Color3.fromRGB(255, 100, 100))
+                task.wait(3)
                 continue
             end
 
-            local pool, seenCount = findServer(1)
-            DebugInfo.lastPool = pool and #pool or 0
-            FoundValue.Text = tostring(DebugInfo.lastPool)
+            local pool = findServer(1)
+            Debug.pool = pool and #pool or 0
+            FoundValue.Text = tostring(Debug.pool)
+            DistValue.Text = tostring(Debug.dist[1] or 0)
             updateDebug()
 
             if not pool or #pool == 0 then
-                setStatus("Không có 1 người · thử 2", Color3.fromRGB(255, 180, 100))
-                task.wait(0.5)
+                setStatus("Không có 1ng · thử 2ng", Color3.fromRGB(255, 180, 100))
+                task.wait(0.3)
 
-                pool, seenCount = findServer(2)
-                DebugInfo.lastPool = pool and #pool or 0
-                FoundValue.Text = tostring(DebugInfo.lastPool)
+                pool = findServer(2)
+                Debug.pool = pool and #pool or 0
+                FoundValue.Text = tostring(Debug.pool)
+                DistValue.Text = "2ng: " .. (Debug.dist[2] or 0)
                 updateDebug()
             end
 
             if pool and #pool > 0 then
                 local target = pool[1]
-                setStatus("Tìm được " .. #pool .. " · đang vào", Color3.fromRGB(120, 255, 160))
+                setStatus("Vào server · FPS" .. target.fps .. " P" .. target.ping, Color3.fromRGB(120, 255, 160))
                 setPill("HOP", Color3.fromRGB(120, 255, 160))
 
                 Blacklist[target.id] = true
                 task.wait(CONFIG.PreTeleportDelay)
 
-                local ok = fastTeleport(target.id)
-                if ok then
-                    hopSuccess = true
+                if fastTeleport(target.id) then
+                    hopped = true
                     task.wait(CONFIG.TeleportWait)
                 else
-                    setStatus("Teleport fail · thử lại", Color3.fromRGB(255, 100, 100))
+                    setStatus("Teleport fail", Color3.fromRGB(255, 100, 100))
                     task.wait(1)
                 end
             else
                 Blacklist = {}
-                setStatus("Không có · thử lại sau " .. CONFIG.LoopWait .. "s", Color3.fromRGB(255, 150, 100))
+                setStatus("Không có · scan lại " .. CONFIG.LoopWait .. "s", Color3.fromRGB(255, 150, 100))
                 setPill("WAIT", Color3.fromRGB(255, 180, 100))
                 task.wait(CONFIG.LoopWait)
             end
@@ -693,12 +670,8 @@ UserInputService.InputEnded:Connect(function(input)
     end
 end)
 
-TweenService:Create(Glow, TweenInfo.new(2.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true), {
-    BackgroundTransparency = 0.88
-}):Play()
-
 updatePlayerCount()
 setStatus("Đang chạy", Color3.fromRGB(120, 255, 160))
-setPill("ON", Color3.fromRGB(140, 255, 180))
+setPill("ON", Color3.fromRGB(60, 220, 120))
 
 task.spawn(mainLoop)
