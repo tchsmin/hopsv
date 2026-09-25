@@ -21,13 +21,14 @@ local CONFIG = {
     PageDelay = 0,
     PassDelay = 0.5,
     ConfirmDelay = 0.3,
-    PreTeleportDelay = 0.15,
+    PreTeleportDelay = 0.2,
     MaxPages = 25,
     ParallelBranches = 5,
     AutoHopDelay = 3,
     MaxTotalAllowed = 2,
-    ScanRetries = 4,
+    ScanRetries = 6,
     RetryWait = 1.5,
+    VerifyBeforeTeleport = true,
 }
 
 local Blacklist = {}
@@ -259,17 +260,17 @@ end
 local function collectFromData(data, targetPlaying, result, lockRef)
     if not data or not data.data then return end
     for _, s in ipairs(data.data) do
-        local pc = s.playing or 0
+        local pc = tonumber(s.playing) or 0
         local id = s.id
         if id and id ~= JOB_ID and not Blacklist[id] and pc == targetPlaying then
             while lockRef[1] do task.wait() end
             lockRef[1] = true
             result[id] = {
                 id = id,
-                ping = s.ping or 999,
-                fps = s.fps or 60,
+                ping = tonumber(s.ping) or 999,
+                fps = tonumber(s.fps) or 60,
                 playing = pc,
-                max = s.maxPlayers or 12,
+                max = tonumber(s.maxPlayers) or 12,
             }
             lockRef[1] = false
         end
@@ -331,10 +332,29 @@ local function parallelScan(targetPlaying)
     return result
 end
 
+local function verifyServer(jobId)
+    local cursor = ""
+    local pages = 0
+    while pages < 15 do
+        local data = requestPage(cursor)
+        if not data or not data.data then return false end
+        for _, s in ipairs(data.data) do
+            if s.id == jobId then
+                local pc = tonumber(s.playing) or 0
+                return pc == 1
+            end
+        end
+        cursor = data.nextPageCursor
+        if not cursor or cursor == "" or cursor == "null" then break end
+        pages = pages + 1
+    end
+    return false
+end
+
 local function calculateScore(server, stabilityBonus)
-    local fpsScore = math.max(0, 60 - server.fps) * 2
-    local pingScore = math.min(server.ping, 500) / 4
-    local stabilityScore = stabilityBonus * 100
+    local fpsScore = math.max(0, 60 - server.fps) * 3
+    local pingScore = math.min(server.ping, 500) / 3
+    local stabilityScore = stabilityBonus * 150
     return 1000 + fpsScore + pingScore + stabilityScore
 end
 
@@ -354,15 +374,15 @@ local function fastTeleport(jobId)
     return success
 end
 
-local function scanForTarget(targetPlaying)
-    local pass1 = parallelScan(targetPlaying)
+local function scanForOnePlayer()
+    local pass1 = parallelScan(1)
     local count1 = 0
     for _ in pairs(pass1) do count1 = count1 + 1 end
     if count1 == 0 then return nil end
 
     task.wait(CONFIG.PassDelay)
 
-    local pass2 = parallelScan(targetPlaying)
+    local pass2 = parallelScan(1)
 
     local stable = {}
     for id, s in pairs(pass2) do
@@ -397,10 +417,7 @@ local function scanForTarget(targetPlaying)
         return a.score > b.score
     end)
 
-    local topCount = math.min(3, #finalPool)
-    if topCount == 0 then return nil end
-
-    return finalPool[math.random(1, topCount)]
+    return finalPool
 end
 
 local function performHop()
@@ -408,7 +425,7 @@ local function performHop()
     IsScanning = true
     IsCountingDown = false
 
-    setStatus("Đang quét server...", Color3.fromRGB(255, 200, 100), "...")
+    setStatus("Đang quét server 1 người...", Color3.fromRGB(255, 200, 100), "...")
 
     if not http then
         IsScanning = false
@@ -416,44 +433,25 @@ local function performHop()
         return
     end
 
-    local target = nil
-    local targetPlaying = 1
-    local mode = "1"
+    local pool = nil
 
     for attempt = 1, CONFIG.ScanRetries do
-        target = scanForTarget(1)
-        if target then
-            targetPlaying = 1
-            mode = "1"
-            break
-        end
+        pool = scanForOnePlayer()
+        if pool and #pool > 0 then break end
 
         setStatus("Quét lại " .. attempt .. "/" .. CONFIG.ScanRetries, Color3.fromRGB(255, 180, 100), "...")
         task.wait(CONFIG.RetryWait)
     end
 
-    if not target then
-        setStatus("Thử server 2 người...", Color3.fromRGB(255, 180, 100), "...")
-        for attempt = 1, 2 do
-            target = scanForTarget(2)
-            if target then
-                targetPlaying = 2
-                mode = "2"
-                break
-            end
-            task.wait(CONFIG.RetryWait)
-        end
-    end
-
-    if not target then
+    if not pool or #pool == 0 then
         IsScanning = false
         ScanFailCount = ScanFailCount + 1
-        setStatus("Không có server", Color3.fromRGB(255, 120, 120), "FAIL")
+        setStatus("Không có server 1 người", Color3.fromRGB(255, 120, 120), "FAIL")
 
         if ScanFailCount >= 3 then
             Blacklist = {}
             ScanFailCount = 0
-            setStatus("Reset · thử lại", Color3.fromRGB(255, 200, 100), "...")
+            setStatus("Reset blacklist · thử lại", Color3.fromRGB(255, 200, 100), "...")
             task.wait(2)
         else
             task.wait(5)
@@ -464,7 +462,39 @@ local function performHop()
     end
 
     ScanFailCount = 0
-    setStatus("Đang vào server " .. mode .. " người...", Color3.fromRGB(120, 255, 160), "HOP")
+
+    local target = nil
+    local maxTry = math.min(#pool, 5)
+
+    for i = 1, maxTry do
+        local candidate = pool[i]
+        if not candidate then break end
+
+        if CONFIG.VerifyBeforeTeleport then
+            setStatus("Xác minh " .. i .. "/" .. maxTry .. "...", Color3.fromRGB(255, 200, 100), "...")
+            task.wait(0.1)
+
+            if verifyServer(candidate.id) then
+                target = candidate
+                break
+            else
+                Blacklist[candidate.id] = true
+            end
+        else
+            target = candidate
+            break
+        end
+    end
+
+    if not target then
+        IsScanning = false
+        setStatus("Server bị fill · thử lại", Color3.fromRGB(255, 120, 120), "FAIL")
+        task.wait(2)
+        performHop()
+        return
+    end
+
+    setStatus("Đang vào server 1 người...", Color3.fromRGB(120, 255, 160), "HOP")
 
     task.wait(CONFIG.PreTeleportDelay)
 
@@ -475,7 +505,7 @@ local function performHop()
     local ok = fastTeleport(target.id)
 
     if not ok then
-        setStatus("Teleport fail · thử lại", Color3.fromRGB(255, 100, 100), "FAIL")
+        setStatus("Teleport fail", Color3.fromRGB(255, 100, 100), "FAIL")
         IsHopping = false
         task.wait(1)
         performHop()
