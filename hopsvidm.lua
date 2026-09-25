@@ -1,4 +1,4 @@
-local VERSION = "PHANTOM v13.3.5"
+local VERSION = "PHANTOM v13.3.6"
 local SCRIPT_NAME = "PHANTOM ⚡"
 
 if not game:IsLoaded() then game.Loaded:Wait() end
@@ -60,10 +60,8 @@ if not HttpRequest then
 end
 
 local RequestPool = {
-    active = 0,
-    maxActive = 8,
     lastRequest = 0,
-    minInterval = 0.02,
+    minInterval = 0.03,
     maxInterval = 0.4,
     totalReqs = 0,
     hits429 = 0,
@@ -80,23 +78,15 @@ local function httpGet(url)
 end
 
 local function throttledGet(url)
-    local startWait = tick()
-    while RequestPool.active >= RequestPool.maxActive do
-        task.wait(0.01)
-        if tick() - startWait > 15 then return nil end
-    end
-
     local now = tick()
     local delta = now - RequestPool.lastRequest
     if delta < RequestPool.minInterval then
         task.wait(RequestPool.minInterval - delta)
     end
     RequestPool.lastRequest = tick()
-    RequestPool.active = RequestPool.active + 1
     RequestPool.totalReqs = RequestPool.totalReqs + 1
 
     local res = httpGet(url)
-    RequestPool.active = RequestPool.active - 1
 
     if res then
         if res.Status == 429 then
@@ -107,9 +97,9 @@ local function throttledGet(url)
             RequestPool.minInterval = ni
         elseif res.Status == 200 then
             RequestPool.successStreak = RequestPool.successStreak + 1
-            if RequestPool.successStreak >= 20 and RequestPool.minInterval > 0.02 then
+            if RequestPool.successStreak >= 20 and RequestPool.minInterval > 0.03 then
                 local ni = RequestPool.minInterval * 0.95
-                if ni < 0.02 then ni = 0.02 end
+                if ni < 0.03 then ni = 0.03 end
                 RequestPool.minInterval = ni
                 RequestPool.successStreak = 0
             end
@@ -139,8 +129,11 @@ local State = {
 local Queue = {}
 local Blacklist = {}
 local Logs = {}
+local LogIndex = 0
+local LogCount = 0
+local LOG_MAX = 50
 local scanPending = false
-local MAX_PAGES = 40
+local MAX_PAGES = 30
 local MAX_QUEUE = 40
 local SCAN_TIMEOUT = 60
 local HOP_TIMEOUT = 25
@@ -149,14 +142,17 @@ local PASS_DELAY = 0.2
 local TOTAL_PASSES = 3
 local MIN_STABILITY = 2
 local MAX_HOP_ATTEMPTS = 5
-local BRANCHES_PER_PASS = 5
+local BRANCHES_PER_PASS = 3
 local VERIFY_MAX_PAGES = 30
 local VERIFY_RETRY = 3
 
 local function log(level, msg)
     local entry = string.format("[%s][%s] %s", os.date("%H:%M:%S"), level, msg)
-    table.insert(Logs, entry)
-    if #Logs > 50 then table.remove(Logs, 1) end
+    LogIndex = LogIndex + 1
+    if LogIndex > LOG_MAX then LogIndex = 1 end
+    Logs[LogIndex] = entry
+    if LogCount < LOG_MAX then LogCount = LogCount + 1 end
+
     if level == "error" or level == "warn" then
         print(entry)
     elseif msg:find("^Scan") or msg:find("^TOP") or msg:find("Countdown") or msg:find("^Hop") or msg:find("^Pass") or msg:find("^Verify") then
@@ -255,7 +251,7 @@ end
 local function scanOnePass(passTag)
     local result = {}
     local threads = {}
-    local orders = {"Asc", "Desc", "Asc", "Desc", "Asc"}
+    local orders = {"Asc", "Desc", "Asc"}
     for i = 1, BRANCHES_PER_PASS do
         local sortOrder = orders[i] or "Asc"
         local branchId = passTag .. "_B" .. i
@@ -457,15 +453,6 @@ local function hopToServer(server)
     log("info", "Chờ " .. State.VerifyDelay .. "s trước verify " .. server.id)
     task.wait(State.VerifyDelay)
 
-    if getPlayerCount() > 0 then
-        local nowPC = getPlayerCount()
-        if nowPC >= 3 and not State.Auto then
-            State.Status = "Server đông, hủy"
-            State.IsHopping = false
-            return false
-        end
-    end
-
     State.Status = "Đang xác định server..."
     log("info", "Verify " .. server.id .. " (score=" .. math.floor(server.score) .. ")")
     local verify = verifyServerOnePlayer(server.id)
@@ -477,7 +464,7 @@ local function hopToServer(server)
         return false
     end
     if verify == nil then
-        log("warn", "Không tìm thấy " .. server.id .. " trong " .. (VERIFY_MAX_PAGES * VERIFY_RETRY) .. " trang → blacklist")
+        log("warn", "Không tìm thấy " .. server.id .. " → blacklist")
         addBlacklist(server.id)
         State.IsHopping = false
         return false
@@ -720,38 +707,37 @@ end)
 local uiLast = {players = -1, found = -1, queue = -1, speed = -1, status = "", auto = nil}
 
 local function updateUI()
-    pcall(function()
-        local pc = getPlayerCount()
-        if pc ~= uiLast.players then
-            UICache.PlayersValue.Text = tostring(pc)
-            uiLast.players = pc
-        end
-        if State.FoundCount ~= uiLast.found then
-            UICache.FoundValue.Text = tostring(State.FoundCount)
-            uiLast.found = State.FoundCount
-        end
-        if #Queue ~= uiLast.queue then
-            UICache.QueueValue.Text = tostring(#Queue)
-            uiLast.queue = #Queue
-        end
-        if State.ScanSpeed ~= uiLast.speed then
-            UICache.SpeedValue.Text = State.ScanSpeed .. " sv/s"
-            uiLast.speed = State.ScanSpeed
-        end
-        if State.Status ~= uiLast.status then
-            UICache.StatusValue.Text = State.Status
-            uiLast.status = State.Status
-        end
-        if State.Auto ~= uiLast.auto then
-            local txt = State.Auto and "AUTO: ON" or "AUTO: OFF"
-            UICache.StatusPill.Text = txt
-            UICache.StatusPill.BackgroundColor3 = State.Auto
-                and Color3.fromRGB(40, 160, 80)
-                or Color3.fromRGB(120, 40, 40)
-            UICache.AutoButton.Text = txt
-            uiLast.auto = State.Auto
-        end
-    end)
+    local pc = getPlayerCount()
+    if pc ~= uiLast.players then
+        UICache.PlayersValue.Text = tostring(pc)
+        uiLast.players = pc
+    end
+    if State.FoundCount ~= uiLast.found then
+        UICache.FoundValue.Text = tostring(State.FoundCount)
+        uiLast.found = State.FoundCount
+    end
+    local qn = #Queue
+    if qn ~= uiLast.queue then
+        UICache.QueueValue.Text = tostring(qn)
+        uiLast.queue = qn
+    end
+    if State.ScanSpeed ~= uiLast.speed then
+        UICache.SpeedValue.Text = State.ScanSpeed .. " sv/s"
+        uiLast.speed = State.ScanSpeed
+    end
+    if State.Status ~= uiLast.status then
+        UICache.StatusValue.Text = State.Status
+        uiLast.status = State.Status
+    end
+    if State.Auto ~= uiLast.auto then
+        local txt = State.Auto and "AUTO: ON" or "AUTO: OFF"
+        UICache.StatusPill.Text = txt
+        UICache.StatusPill.BackgroundColor3 = State.Auto
+            and Color3.fromRGB(40, 160, 80)
+            or Color3.fromRGB(120, 40, 40)
+        UICache.AutoButton.Text = txt
+        uiLast.auto = State.Auto
+    end
 end
 
 UI.AutoButton.MouseButton1Click:Connect(function()
@@ -786,7 +772,7 @@ end)
 task.spawn(function()
     while true do
         task.wait(1)
-        updateUI()
+        pcall(updateUI)
     end
 end)
 
@@ -845,7 +831,7 @@ end
 
 local function refillLoop()
     while true do
-        task.wait(6)
+        task.wait(8)
         if State.Auto and #Queue < 5 and not State.IsScanning and not State.IsHopping and not scanPending then
             if getPlayerCount() < 3 then
                 task.spawn(scanServers)
