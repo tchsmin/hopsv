@@ -1,28 +1,20 @@
 local Players = game:GetService("Players")
 local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
-local CoreGui = game:GetService("CoreGui")
-local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 
 local LocalPlayer = Players.LocalPlayer
 local PLACE_ID = game.PlaceId
 local JOB_ID = game.JobId
 
-local ALLOWED_PLACE_IDS = {
-    [13772394625] = true,
-    [109983668079237] = true,
-    [115484077057506] = true,
-    [135609351274353] = true,
-}
-
-local function isAllowedGame()
-    return ALLOWED_PLACE_IDS[PLACE_ID] == true
-end
-
-if not isAllowedGame() then
-    warn("[HOP SERVER] Chỉ hoạt động trong Steal an Egg")
-    return
+local function notify(title, text, duration)
+    pcall(function()
+        game:GetService("StarterGui"):SetCore("SendNotification", {
+            Title = tostring(title),
+            Text = tostring(text),
+            Duration = duration or 5
+        })
+    end)
 end
 
 local function getHttp()
@@ -35,6 +27,11 @@ local function getHttp()
     return nil
 end
 local http = getHttp()
+
+if not http then
+    notify("LỖI", "Executor không có HTTP")
+    return
+end
 
 local CONFIG = {
     PageDelay = 0.03,
@@ -49,7 +46,6 @@ local CONFIG = {
     MinPlayerFilter = 1,
     TeleportTimeout = 10,
     MaxTeleportAttempts = 3,
-    RequestTimeout = 4,
     RequestRetries = 2,
 }
 
@@ -57,211 +53,10 @@ local Blacklist = {}
 local IsScanning = false
 local IsHopping = false
 local AutoEnabled = true
-local TargetTotal = nil
 local MonitorConn = nil
 local LastPlayerCount = 0
 local TeleportPending = false
 local ScanGeneration = 0
-
-if CoreGui:FindFirstChild("PhantomUI") then CoreGui.PhantomUI:Destroy() end
-
-local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "PhantomUI"
-ScreenGui.ResetOnSpawn = false
-ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-ScreenGui.IgnoreGuiInset = true
-ScreenGui.DisplayOrder = 999999
-ScreenGui.Parent = CoreGui
-
-local Main = Instance.new("Frame")
-Main.Size = UDim2.new(0, 200, 0, 108)
-Main.Position = UDim2.new(0, 20, 0.5, -54)
-Main.BackgroundColor3 = Color3.fromRGB(16, 18, 26)
-Main.BorderSizePixel = 0
-Main.Active = true
-Main.Parent = ScreenGui
-
-local MainCorner = Instance.new("UICorner")
-MainCorner.CornerRadius = UDim.new(0, 12)
-MainCorner.Parent = Main
-
-local MainStroke = Instance.new("UIStroke")
-MainStroke.Color = Color3.fromRGB(120, 80, 255)
-MainStroke.Thickness = 1
-MainStroke.Transparency = 0.3
-MainStroke.Parent = Main
-
-local Header = Instance.new("Frame")
-Header.Size = UDim2.new(1, 0, 0, 32)
-Header.BackgroundTransparency = 1
-Header.Parent = Main
-
-local TitleText = Instance.new("TextLabel")
-TitleText.Size = UDim2.new(1, -24, 1, 0)
-TitleText.Position = UDim2.new(0, 12, 0, 0)
-TitleText.BackgroundTransparency = 1
-TitleText.Text = "HOP SERVER"
-TitleText.TextColor3 = Color3.fromRGB(240, 240, 255)
-TitleText.Font = Enum.Font.GothamBold
-TitleText.TextSize = 12
-TitleText.TextXAlignment = Enum.TextXAlignment.Left
-TitleText.Parent = Header
-
-local HeaderDot = Instance.new("Frame")
-HeaderDot.Size = UDim2.new(0, 6, 0, 6)
-HeaderDot.Position = UDim2.new(1, -16, 0.5, -3)
-HeaderDot.BackgroundColor3 = Color3.fromRGB(120, 80, 255)
-HeaderDot.BorderSizePixel = 0
-HeaderDot.Parent = Header
-
-local HdCorner = Instance.new("UICorner")
-HdCorner.CornerRadius = UDim.new(1, 0)
-HdCorner.Parent = HeaderDot
-
-local Divider = Instance.new("Frame")
-Divider.Size = UDim2.new(1, -24, 0, 1)
-Divider.Position = UDim2.new(0, 12, 0, 34)
-Divider.BackgroundColor3 = Color3.fromRGB(35, 40, 55)
-Divider.BorderSizePixel = 0
-Divider.Parent = Main
-
-local PlayerRow = Instance.new("Frame")
-PlayerRow.Size = UDim2.new(1, -24, 0, 30)
-PlayerRow.Position = UDim2.new(0, 12, 0, 40)
-PlayerRow.BackgroundColor3 = Color3.fromRGB(24, 27, 38)
-PlayerRow.BorderSizePixel = 0
-PlayerRow.Parent = Main
-
-local PRCorner = Instance.new("UICorner")
-PRCorner.CornerRadius = UDim.new(0, 7)
-PRCorner.Parent = PlayerRow
-
-local PlayerIcon = Instance.new("TextLabel")
-PlayerIcon.Size = UDim2.new(0, 30, 1, 0)
-PlayerIcon.Position = UDim2.new(0, 2, 0, 0)
-PlayerIcon.BackgroundTransparency = 1
-PlayerIcon.Text = "👥"
-PlayerIcon.TextColor3 = Color3.fromRGB(120, 180, 255)
-PlayerIcon.Font = Enum.Font.GothamBold
-PlayerIcon.TextSize = 14
-PlayerIcon.Parent = PlayerRow
-
-local PlayerLabel = Instance.new("TextLabel")
-PlayerLabel.Size = UDim2.new(1, -100, 1, 0)
-PlayerLabel.Position = UDim2.new(0, 34, 0, 0)
-PlayerLabel.BackgroundTransparency = 1
-PlayerLabel.Text = "Số người"
-PlayerLabel.TextColor3 = Color3.fromRGB(160, 170, 200)
-PlayerLabel.Font = Enum.Font.Gotham
-PlayerLabel.TextSize = 10
-PlayerLabel.TextXAlignment = Enum.TextXAlignment.Left
-PlayerLabel.Parent = PlayerRow
-
-local PlayerValue = Instance.new("TextLabel")
-PlayerValue.Size = UDim2.new(0, 60, 1, 0)
-PlayerValue.Position = UDim2.new(1, -66, 0, 0)
-PlayerValue.BackgroundTransparency = 1
-PlayerValue.Text = "1"
-PlayerValue.TextColor3 = Color3.fromRGB(120, 255, 160)
-PlayerValue.Font = Enum.Font.GothamBold
-PlayerValue.TextSize = 13
-PlayerValue.TextXAlignment = Enum.TextXAlignment.Right
-PlayerValue.Parent = PlayerRow
-
-local StatusRow = Instance.new("Frame")
-StatusRow.Size = UDim2.new(1, -24, 0, 30)
-StatusRow.Position = UDim2.new(0, 12, 0, 76)
-StatusRow.BackgroundColor3 = Color3.fromRGB(24, 27, 38)
-StatusRow.BorderSizePixel = 0
-StatusRow.Parent = Main
-
-local SRCorner = Instance.new("UICorner")
-SRCorner.CornerRadius = UDim.new(0, 7)
-SRCorner.Parent = StatusRow
-
-local StatusDot = Instance.new("Frame")
-StatusDot.Size = UDim2.new(0, 8, 0, 8)
-StatusDot.Position = UDim2.new(0, 12, 0.5, -4)
-StatusDot.BackgroundColor3 = Color3.fromRGB(60, 220, 120)
-StatusDot.BorderSizePixel = 0
-StatusDot.Parent = StatusRow
-
-local DotCorner = Instance.new("UICorner")
-DotCorner.CornerRadius = UDim.new(1, 0)
-DotCorner.Parent = StatusDot
-
-local DotPulse = Instance.new("Frame")
-DotPulse.Size = UDim2.new(1, 0, 1, 0)
-DotPulse.BackgroundColor3 = Color3.fromRGB(60, 220, 120)
-DotPulse.BackgroundTransparency = 0.6
-DotPulse.BorderSizePixel = 0
-DotPulse.Parent = StatusDot
-
-local PulseCorner = Instance.new("UICorner")
-PulseCorner.CornerRadius = UDim.new(1, 0)
-PulseCorner.Parent = DotPulse
-
-task.spawn(function()
-    while ScreenGui.Parent do
-        DotPulse.Size = UDim2.new(1, 0, 1, 0)
-        DotPulse.Position = UDim2.new(0, 0, 0, 0)
-        DotPulse.BackgroundTransparency = 0.6
-        task.wait(1)
-        DotPulse:TweenSizeAndPosition(
-            UDim2.new(3, 0, 3, 0),
-            UDim2.new(-1, 0, -1, 0),
-            Enum.EasingDirection.Out,
-            Enum.EasingStyle.Sine,
-            0.8
-        )
-        DotPulse.BackgroundTransparency = 1
-        task.wait(0.8)
-    end
-end)
-
-local StatusLabel = Instance.new("TextLabel")
-StatusLabel.Size = UDim2.new(1, -100, 1, 0)
-StatusLabel.Position = UDim2.new(0, 26, 0, 0)
-StatusLabel.BackgroundTransparency = 1
-StatusLabel.Text = "Đang chạy"
-StatusLabel.TextColor3 = Color3.fromRGB(160, 170, 200)
-StatusLabel.Font = Enum.Font.Gotham
-StatusLabel.TextSize = 10
-StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
-StatusLabel.Parent = StatusRow
-
-local StatusValue = Instance.new("TextLabel")
-StatusValue.Size = UDim2.new(0, 60, 1, 0)
-StatusValue.Position = UDim2.new(1, -66, 0, 0)
-StatusValue.BackgroundTransparency = 1
-StatusValue.Text = "ON"
-StatusValue.TextColor3 = Color3.fromRGB(120, 255, 160)
-StatusValue.Font = Enum.Font.GothamBold
-StatusValue.TextSize = 11
-StatusValue.TextXAlignment = Enum.TextXAlignment.Right
-StatusValue.Parent = StatusRow
-
-local function setStatus(text, color, state)
-    StatusLabel.Text = text
-    StatusValue.Text = state or ""
-    StatusValue.TextColor3 = color or Color3.fromRGB(120, 255, 160)
-    StatusDot.BackgroundColor3 = color or Color3.fromRGB(60, 220, 120)
-    DotPulse.BackgroundColor3 = color or Color3.fromRGB(60, 220, 120)
-end
-
-local function updatePlayerCount()
-    local count = #Players:GetPlayers()
-    PlayerValue.Text = tostring(count)
-    if count <= 2 then
-        PlayerValue.TextColor3 = Color3.fromRGB(120, 255, 160)
-    else
-        PlayerValue.TextColor3 = Color3.fromRGB(255, 120, 120)
-    end
-    return count
-end
-
-Players.PlayerAdded:Connect(function() task.wait(0.2) updatePlayerCount() end)
-Players.PlayerRemoving:Connect(function() task.wait(0.4) updatePlayerCount() end)
 
 local function requestPage(cursor)
     if not http then return nil end
@@ -274,11 +69,10 @@ local function requestPage(cursor)
         PLACE_ID, cursorParam
     )
     local attempts = 0
-    local maxAttempts = CONFIG.RequestRetries
-    while attempts < maxAttempts do
+    while attempts < CONFIG.RequestRetries do
         attempts = attempts + 1
         local ok, res = pcall(function()
-            return http({ Url = url, Method = "GET", Headers = { ["Accept"] = "application/json" } })
+            return http({ Url = url, Method = "GET" })
         end)
         if ok and res then
             local body = res.Body or res.body
@@ -291,7 +85,7 @@ local function requestPage(cursor)
                 end
             end
         end
-        if attempts < maxAttempts then
+        if attempts < CONFIG.RequestRetries then
             task.wait(0.15)
         end
     end
@@ -399,8 +193,7 @@ local function parallelScan(targetPlaying, myGeneration)
     while tick() - startTime < 6 do
         local allDone = true
         for _, t in ipairs(threads) do
-            local status = coroutine.status(t)
-            if status ~= "dead" then
+            if coroutine.status(t) ~= "dead" then
                 allDone = false
                 break
             end
@@ -425,19 +218,19 @@ local function attemptTeleport(jobId)
         opts.ServerInstanceId = jobId
         TeleportService:TeleportAsync(PLACE_ID, {LocalPlayer}, opts)
     end)
-    if ok1 then return true, "async" end
+    if ok1 then return true end
 
     local ok2 = pcall(function()
         TeleportService:TeleportToPlaceInstance(PLACE_ID, jobId, LocalPlayer)
     end)
-    if ok2 then return true, "place3" end
+    if ok2 then return true end
 
     local ok3 = pcall(function()
         TeleportService:TeleportToPlaceInstance(PLACE_ID, jobId)
     end)
-    if ok3 then return true, "place2" end
+    if ok3 then return true end
 
-    return false, nil
+    return false
 end
 
 local function verifyServerExists(jobId)
@@ -467,9 +260,7 @@ local function verifyServerExists(jobId)
 end
 
 local function teleportWithVerify(target)
-    if not target or type(target.id) ~= "string" then
-        return false, "invalid_target"
-    end
+    if not target or type(target.id) ~= "string" then return false end
 
     local verified = false
     for _ = 1, 2 do
@@ -482,31 +273,30 @@ local function teleportWithVerify(target)
 
     if not verified then
         Blacklist[target.id] = true
-        return false, "verify_fail"
+        return false
     end
 
     TeleportPending = true
     local originalJob = game.JobId
 
-    local ok, method = attemptTeleport(target.id)
-    if not ok then
+    if not attemptTeleport(target.id) then
         TeleportPending = false
         Blacklist[target.id] = true
-        return false, "teleport_call_fail"
+        return false
     end
 
     local startTime = tick()
     while tick() - startTime < CONFIG.TeleportTimeout do
         if game.JobId ~= originalJob then
             TeleportPending = false
-            return true, method
+            return true
         end
         task.wait(0.3)
     end
 
     TeleportPending = false
     Blacklist[target.id] = true
-    return false, "stuck"
+    return false
 end
 
 local function scanForOnePlayer(myGeneration)
@@ -617,13 +407,7 @@ local function performHop()
     ScanGeneration = ScanGeneration + 1
     local myGeneration = ScanGeneration
 
-    setStatus("Đang quét server...", Color3.fromRGB(255, 200, 100), "...")
-
-    if not http then
-        IsScanning = false
-        setStatus("Lỗi HTTP", Color3.fromRGB(255, 100, 100), "OFF")
-        return
-    end
+    notify("HOP SERVER", "Đang quét server...", 3)
 
     local target, targetMode = scanForOnePlayer(myGeneration)
 
@@ -634,14 +418,12 @@ local function performHop()
 
     if not target then
         IsScanning = false
-        setStatus("Không có server", Color3.fromRGB(255, 120, 120), "FAIL")
+        notify("HOP SERVER", "Không có server · thử lại sau 5s", 3)
         task.wait(5)
-        setStatus("Đang chạy", Color3.fromRGB(120, 255, 160), "ON")
         return
     end
 
-    local modeText = targetMode == "1" and "1 người" or "2 người"
-    setStatus("Vào server " .. modeText, Color3.fromRGB(120, 255, 160), "HOP")
+    notify("HOP SERVER", "Vào server " .. targetMode .. " người", 3)
 
     task.wait(CONFIG.PreTeleportDelay)
 
@@ -652,7 +434,6 @@ local function performHop()
 
     IsScanning = false
     IsHopping = true
-    TargetTotal = target.playing + 1
     Blacklist[target.id] = true
 
     local success = false
@@ -662,8 +443,7 @@ local function performHop()
             return
         end
 
-        local ok = teleportWithVerify(target)
-        if ok then
+        if teleportWithVerify(target) then
             success = true
             break
         end
@@ -671,10 +451,8 @@ local function performHop()
     end
 
     IsHopping = false
-    if success then
-        setStatus("Đang chạy", Color3.fromRGB(120, 255, 160), "ON")
-    else
-        setStatus("Vào thất bại · thử lại", Color3.fromRGB(255, 180, 100), "RETRY")
+    if not success then
+        notify("HOP SERVER", "Vào fail · thử lại", 3)
         task.wait(2)
         performHop()
     end
@@ -691,22 +469,20 @@ local function startMonitor()
         LastPlayerCount = count
 
         if count > CONFIG.MaxTotalAllowed then
-            setStatus("Server " .. count .. " người · chờ " .. CONFIG.AutoHopDelay .. "s", Color3.fromRGB(255, 200, 120), "...")
+            notify("HOP SERVER", "Server " .. count .. " người · hop sau " .. CONFIG.AutoHopDelay .. "s", 3)
 
-            local myTriggerCount = count
             task.spawn(function()
                 for i = CONFIG.AutoHopDelay, 1, -1 do
                     if not AutoEnabled then return end
                     if IsHopping or IsScanning then return end
                     local cnt = #Players:GetPlayers()
                     if cnt <= CONFIG.MaxTotalAllowed then
-                        setStatus("Đã về " .. cnt .. " người", Color3.fromRGB(120, 255, 160), "ON")
+                        notify("HOP SERVER", "Đã về " .. cnt .. " người · hủy hop", 3)
                         return
                     end
-                    if cnt ~= myTriggerCount and cnt > CONFIG.MaxTotalAllowed then
-                        myTriggerCount = cnt
+                    if i > 1 then
+                        notify("HOP SERVER", "Hop sau " .. i .. "s · " .. cnt .. " người", 2)
                     end
-                    setStatus("Hop sau " .. i .. "s · " .. cnt .. " người", Color3.fromRGB(255, 180, 100), "...")
                     task.wait(1)
                 end
 
@@ -715,42 +491,11 @@ local function startMonitor()
                     performHop()
                 end
             end)
-        else
-            setStatus("Server " .. count .. " người · ổn", Color3.fromRGB(120, 255, 160), "ON")
         end
     end)
 end
 
-local dragging, dragStart, startPos
-Header.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1
-        or input.UserInputType == Enum.UserInputType.Touch then
-        dragging = true
-        dragStart = input.Position
-        startPos = Main.Position
-    end
-end)
-
-UserInputService.InputChanged:Connect(function(input)
-    if not dragging then return end
-    if input.UserInputType ~= Enum.UserInputType.MouseMovement
-        and input.UserInputType ~= Enum.UserInputType.Touch then return end
-    local d = input.Position - dragStart
-    Main.Position = UDim2.new(
-        startPos.X.Scale, startPos.X.Offset + d.X,
-        startPos.Y.Scale, startPos.Y.Offset + d.Y
-    )
-end)
-
-UserInputService.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1
-        or input.UserInputType == Enum.UserInputType.Touch then
-        dragging = false
-    end
-end)
-
-updatePlayerCount()
-setStatus("Đang chạy", Color3.fromRGB(120, 255, 160), "ON")
+notify("HOP SERVER", "Đang khởi động...", 3)
 startMonitor()
 
 task.spawn(function()
@@ -758,5 +503,7 @@ task.spawn(function()
     local count = #Players:GetPlayers()
     if count > CONFIG.MaxTotalAllowed then
         performHop()
+    else
+        notify("HOP SERVER", "Đang chạy · chờ người vào", 3)
     end
 end)
