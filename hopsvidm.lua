@@ -17,6 +17,10 @@ local function notify(title, text, duration)
     end)
 end
 
+local function log(...)
+    print("[HOP]", ...)
+end
+
 local function getHttp()
     if syn and syn.request then return syn.request end
     if http_request then return http_request end
@@ -34,16 +38,14 @@ if not http then
 end
 
 local CONFIG = {
-    MaxPages = 15,
-    PassDelay = 2.5,
-    ConfirmDelay = 1.5,
-    PreTeleportDelay = 0.3,
+    MaxPages = 25,
+    MaxPlayerFilter = 2,
     AutoHopDelay = 3,
     MaxTotalAllowed = 2,
-    HopCooldown = 6,
-    FailCooldown = 12,
+    RetryDelay = 5,
     PostCheckDelay = 4,
-    MaxPlayerFilter = 2,
+    VerifyRetries = 2,
+    RequestRetries = 3,
 }
 
 local Blacklist = {}
@@ -53,18 +55,17 @@ local AutoEnabled = true
 local MonitorConn = nil
 local LastPlayerCount = 0
 local TeleportPending = false
-local LastHopTime = 0
-local ConsecutiveFail = 0
+local NeedHop = false
 local CountdownGen = 0
 local PostCheckGen = 0
 
 local function requestPage(cursor)
-    if not http then return nil end
+    if not http then return nil, "no_http" end
     local url = string.format(
         "https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100&cursor=%s",
         PLACE_ID, cursor or ""
     )
-    for attempt = 1, 2 do
+    for attempt = 1, CONFIG.RequestRetries do
         local ok, res = pcall(function()
             return http({ Url = url, Method = "GET" })
         end)
@@ -75,38 +76,45 @@ local function requestPage(cursor)
                     return HttpService:JSONDecode(body)
                 end)
                 if ok2 and type(data) == "table" and type(data.data) == "table" then
-                    return data
+                    return data, nil
                 end
             end
         end
-        task.wait(0.2)
+        task.wait(0.3)
     end
-    return nil
+    return nil, "request_fail"
 end
 
-local function scanPass(maxPlayers, maxPages)
-    local result = {}
+local function scanAllServers()
+    local all = {}
     local cursor = ""
     local pages = 0
+    local totalServers = 0
+    local filteredCount = 0
 
-    while pages < maxPages do
-        local data = requestPage(cursor)
-        if not data then break end
+    while pages < CONFIG.MaxPages do
+        local data, err = requestPage(cursor)
+        if not data then
+            log("Request failed at page", pages, err)
+            break
+        end
 
         local cnt = 0
         for _, s in ipairs(data.data) do
             cnt = cnt + 1
+            totalServers = totalServers + 1
             local pc = tonumber(s.playing) or 0
             local id = s.id
-            if type(id) == "string" and pc >= 1 and pc <= maxPlayers then
-                if id ~= JOB_ID and not Blacklist[id] then
-                    result[id] = {
+            if type(id) == "string" and pc >= 1 and pc <= CONFIG.MaxPlayerFilter then
+                if id ~= JOB_ID then
+                    all[id] = {
                         id = id,
                         ping = tonumber(s.ping) or 999,
                         fps = tonumber(s.fps) or 60,
                         playing = pc,
                         max = tonumber(s.maxPlayers) or 12,
                     }
+                    filteredCount = filteredCount + 1
                 end
             end
         end
@@ -119,22 +127,15 @@ local function scanPass(maxPlayers, maxPages)
         task.wait(0.02)
     end
 
-    return result
+    log("Total servers scanned:", totalServers, "| Filtered:", filteredCount, "| Pages:", pages)
+    return all, totalServers, filteredCount
 end
 
-local function calculateScore(server, stabilityBonus)
-    local playerScore = 0
-    if server.playing == 1 then
-        playerScore = 100
-    elseif server.playing == 2 then
-        playerScore = 40
-    elseif server.playing == 3 then
-        playerScore = 10
-    end
-    local fpsScore = math.max(0, 60 - server.fps) * 1.5
-    local pingScore = math.min(server.ping, 500) / 5
-    local stabilityScore = stabilityBonus * 60
-    return playerScore + fpsScore + pingScore + stabilityScore
+local function calculateScore(server)
+    local fpsScore = math.max(0, 60 - server.fps) * 2
+    local pingScore = math.min(server.ping, 500) / 4
+    local playerBonus = server.playing == 1 and 500 or 0
+    return playerBonus + fpsScore + pingScore
 end
 
 local function attemptTeleport(jobId)
@@ -143,90 +144,56 @@ local function attemptTeleport(jobId)
         opts.ServerInstanceId = jobId
         TeleportService:TeleportAsync(PLACE_ID, {LocalPlayer}, opts)
     end)
-    if ok1 then return true end
+    if ok1 then return true, "async" end
 
     local ok2 = pcall(function()
         TeleportService:TeleportToPlaceInstance(PLACE_ID, jobId, LocalPlayer)
     end)
-    if ok2 then return true end
+    if ok2 then return true, "place3" end
 
     local ok3 = pcall(function()
         TeleportService:TeleportToPlaceInstance(PLACE_ID, jobId)
     end)
-    if ok3 then return true end
+    if ok3 then return true, "place2" end
 
-    return false
+    return false, nil
 end
 
 local function findServer()
-    notify("HOP SERVER", "Đang dò server...", 2)
+    log("=== SCAN START ===")
 
-    local pass1 = scanPass(CONFIG.MaxPlayerFilter, CONFIG.MaxPages)
+    local servers, total, filtered = scanAllServers()
 
-    local count1 = 0
-    for _ in pairs(pass1) do count1 = count1 + 1 end
-    if count1 == 0 then
-        return nil, "no_server_pass1"
+    if next(servers) == nil then
+        log("No servers found")
+        return nil, "no_servers"
     end
 
-    notify("HOP SERVER", "Pass 1: " .. count1 .. " server · chờ 2.5s", 2)
-    task.wait(CONFIG.PassDelay)
-
-    local pass2 = scanPass(CONFIG.MaxPlayerFilter, CONFIG.MaxPages)
-
-    local stable = {}
-    for id, s in pairs(pass2) do
-        if pass1[id] then
-            s.stability = 2
-            if s.playing == pass1[id].playing then
-                s.stability = 3
-            end
-            table.insert(stable, s)
-        end
+    local candidates = {}
+    for id, s in pairs(servers) do
+        s.score = calculateScore(s)
+        table.insert(candidates, s)
     end
 
-    if #stable == 0 then
-        for id, s in pairs(pass1) do
-            s.stability = 1
-            table.insert(stable, s)
-        end
-    end
-
-    if #stable == 0 then
-        return nil, "no_stable"
-    end
-
-    notify("HOP SERVER", "Đang xác nhận...", 2)
-    task.wait(CONFIG.ConfirmDelay)
-
-    local finalPool = {}
-    for _, s in ipairs(stable) do
-        s.score = calculateScore(s, s.stability)
-        table.insert(finalPool, s)
-    end
-
-    table.sort(finalPool, function(a, b)
+    table.sort(candidates, function(a, b)
         return a.score > b.score
     end)
 
     local onePlayer = {}
-    for _, s in ipairs(finalPool) do
+    for _, s in ipairs(candidates) do
         if s.playing == 1 then
             table.insert(onePlayer, s)
         end
     end
 
-    local pickFrom = onePlayer
-    if #pickFrom == 0 then
-        pickFrom = finalPool
-    end
+    local pool = #onePlayer > 0 and onePlayer or candidates
+    local topCount = math.min(3, #pool)
+    local target = pool[math.random(1, topCount)]
 
-    if #pickFrom == 0 then
-        return nil, "empty_pool"
-    end
+    log("Candidates:", #candidates, "| 1-player:", #onePlayer, "| Target:", target.id:sub(1, 12), "| players:", target.playing)
+    log("=== SCAN END ===")
 
-    local topCount = math.min(3, #pickFrom)
-    return pickFrom[math.random(1, topCount)], nil
+    return target, nil
 end
 
 local function postTeleportCheck(myGen)
@@ -237,62 +204,43 @@ local function postTeleportCheck(myGen)
     local count = #Players:GetPlayers()
     if count > CONFIG.MaxTotalAllowed then
         notify("HOP SERVER", "Vừa vào " .. count .. " người · hop lại", 3)
-        task.wait(1)
-        if myGen ~= PostCheckGen then return end
-        performHop()
+        NeedHop = true
     else
         notify("HOP SERVER", "Server " .. count .. " người · OK", 3)
+        NeedHop = false
     end
 end
 
 function performHop()
-    if IsScanning or IsHopping then return end
-
-    local now = tick()
-    local cooldown = CONFIG.HopCooldown
-    if ConsecutiveFail >= 2 then cooldown = CONFIG.FailCooldown end
-    if now - LastHopTime < cooldown then
-        local wait = math.ceil(cooldown - (now - LastHopTime))
-        if wait > 2 then
-            notify("HOP SERVER", "Cooldown " .. wait .. "s", 2)
-        end
-        task.wait(cooldown - (now - LastHopTime))
-    end
+    if IsScanning or IsHopping then return false end
 
     IsScanning = true
+    NeedHop = false
 
-    local target, reason = findServer()
+    local target = findServer()
 
     if not target then
         IsScanning = false
-        ConsecutiveFail = ConsecutiveFail + 1
-        LastHopTime = tick()
-
-        if ConsecutiveFail >= 4 then
-            notify("HOP SERVER", "Fail nhiều · nghỉ 20s", 4)
-            task.wait(20)
-            ConsecutiveFail = 0
-        else
-            notify("HOP SERVER", "Không có server · thử lại 5s", 3)
-            task.wait(5)
-        end
-        return
+        notify("HOP SERVER", "Không có server · thử lại sau " .. CONFIG.RetryDelay .. "s", 3)
+        task.wait(CONFIG.RetryDelay)
+        return false
     end
 
     notify("HOP SERVER", "Vào " .. target.playing .. " người · FPS" .. target.fps .. " · P" .. target.ping, 3)
 
-    task.wait(CONFIG.PreTeleportDelay)
+    task.wait(0.2)
 
     IsScanning = false
     IsHopping = true
     TeleportPending = true
-    Blacklist[target.id] = true
-    LastHopTime = tick()
+    Blacklist[target.id] = tick()
 
     local success = false
     for attempt = 1, 2 do
-        if attemptTeleport(target.id) then
+        local ok, method = attemptTeleport(target.id)
+        if ok then
             success = true
+            log("Teleport success via", method)
             break
         end
         task.wait(1.5)
@@ -302,16 +250,16 @@ function performHop()
     IsHopping = false
 
     if success then
-        ConsecutiveFail = 0
         PostCheckGen = PostCheckGen + 1
         local myGen = PostCheckGen
         task.spawn(function()
             postTeleportCheck(myGen)
         end)
+        return true
     else
-        ConsecutiveFail = ConsecutiveFail + 1
-        notify("HOP SERVER", "Vào fail · đợi " .. CONFIG.FailCooldown .. "s", 3)
-        task.wait(CONFIG.FailCooldown)
+        notify("HOP SERVER", "Vào fail · thử lại " .. CONFIG.RetryDelay .. "s", 3)
+        task.wait(CONFIG.RetryDelay)
+        return false
     end
 end
 
@@ -327,7 +275,8 @@ local function triggerCountdown(count)
 
             local cnt = #Players:GetPlayers()
             if cnt <= CONFIG.MaxTotalAllowed then
-                notify("HOP SERVER", "Đã về " .. cnt .. " người · hủy", 3)
+                notify("HOP SERVER", "Đã về " .. cnt .. " người · hủy hop", 3)
+                NeedHop = false
                 return
             end
 
@@ -340,7 +289,7 @@ local function triggerCountdown(count)
         if myGen ~= CountdownGen then return end
         if IsHopping or IsScanning then return end
         if #Players:GetPlayers() > CONFIG.MaxTotalAllowed then
-            performHop()
+            NeedHop = true
         end
     end)
 end
@@ -365,15 +314,36 @@ local function startMonitor()
         else
             if oldCount > CONFIG.MaxTotalAllowed then
                 CountdownGen = CountdownGen + 1
+                NeedHop = false
             end
         end
     end)
 end
 
+task.spawn(function()
+    while true do
+        task.wait(1)
+        if not AutoEnabled then continue end
+        if IsHopping or IsScanning or TeleportPending then continue end
+
+        local count = #Players:GetPlayers()
+        if count > CONFIG.MaxTotalAllowed then
+            NeedHop = true
+        end
+
+        if NeedHop then
+            performHop()
+        end
+    end
+end)
+
 notify("HOP SERVER", "Đang khởi động...", 3)
 
 LastPlayerCount = #Players:GetPlayers()
 notify("HOP SERVER", "Server hiện tại: " .. LastPlayerCount .. " người", 3)
+
+log("PlaceId:", PLACE_ID)
+log("JobId:", JOB_ID:sub(1, 12))
 
 startMonitor()
 
@@ -382,7 +352,7 @@ task.spawn(function()
     local count = #Players:GetPlayers()
     if count > CONFIG.MaxTotalAllowed then
         notify("HOP SERVER", "Server đông · hop ngay", 3)
-        performHop()
+        NeedHop = true
     else
         notify("HOP SERVER", "Đang chạy · hop khi ≥ 3 người", 4)
     end
