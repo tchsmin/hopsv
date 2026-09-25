@@ -1,4 +1,4 @@
-local VERSION = "PHANTOM v13.2.4"
+local VERSION = "PHANTOM v13.2.5"
 local SCRIPT_NAME = "PHANTOM ⚡"
 
 if not game:IsLoaded() then game.Loaded:Wait() end
@@ -38,9 +38,9 @@ local function safeStr(v, default)
 end
 
 local function getRequest()
-    if syn and syn.request then return syn.request end
     if http_request then return http_request end
     if request then return request end
+    if syn and syn.request then return syn.request end
     if fluxus and fluxus.request then return fluxus.request end
     return nil
 end
@@ -86,14 +86,13 @@ local State = {
 local Queue = {}
 local Blacklist = {}
 local Logs = {}
-local QueueLock = false
-local MAX_PAGES = 30
-local MAX_QUEUE = 10
+local MAX_PAGES = 12
+local MAX_QUEUE = 20
 local SCAN_TIMEOUT = 40
 local HOP_TIMEOUT = 15
 local BLACKLIST_MAX = 80
-local SCAN_DELAY = 0
-local PASS_DELAY = 0.2
+local SCAN_DELAY = 0.02
+local PASS_DELAY = 2.5
 
 local function log(level, msg)
     local entry = string.format("[%s][%s] %s", os.date("%H:%M:%S"), level, msg)
@@ -121,20 +120,6 @@ local function isBlacklisted(jobId)
     return Blacklist[jobId] == true
 end
 
-local function sortQueue()
-    table.sort(Queue, function(a, b)
-        if a.Stability ~= b.Stability then
-            return a.Stability > b.Stability
-        end
-        return a.Score > b.Score
-    end)
-end
-
-local function getScore(playerCount)
-    if playerCount == 1 then return 1000 end
-    return 0
-end
-
 local function fetchServers(cursor, sortOrder)
     sortOrder = sortOrder or "Asc"
     local url = string.format(
@@ -157,67 +142,12 @@ local function fetchServers(cursor, sortOrder)
     return data
 end
 
-local function mergeServerToQueue(srv, passNum)
-    local jobId = safeStr(srv.id, "")
-    local playing = safeNum(srv.playing, 0)
-    local maxPlayers = safeNum(srv.maxPlayers, 0)
-    if jobId == "" or jobId == game.JobId then return end
-    if playing ~= 1 then return end
-    if isBlacklisted(jobId) then return end
-
-    while QueueLock do task.wait() end
-    QueueLock = true
-    State.SeenCount = State.SeenCount + 1
-
-    local existing = nil
-    for _, q in ipairs(Queue) do
-        if q.JobId == jobId then existing = q break end
-    end
-
-    if existing then
-        existing.Passes[passNum] = true
-        local passCount = 0
-        for _ in pairs(existing.Passes) do passCount = passCount + 1 end
-        if passCount >= 3 then
-            existing.Stability = 3
-        elseif passCount == 2 then
-            existing.Stability = 2
-        else
-            existing.Stability = 1
-        end
-        if existing.Stability < 2 then
-            for i = #Queue, 1, -1 do
-                if Queue[i].JobId == jobId then
-                    table.remove(Queue, i)
-                    break
-                end
-            end
-        end
-    else
-        local entry = {
-            JobId = jobId,
-            Playing = playing,
-            MaxPlayers = maxPlayers,
-            Score = getScore(playing),
-            Stability = 1,
-            Passes = {[passNum] = true},
-        }
-        if #Queue < MAX_QUEUE then
-            table.insert(Queue, entry)
-        end
-    end
-
-    sortQueue()
-    QueueLock = false
-end
-
-local function scanBranch(branchId, sortOrder)
+local function scanBranch(branchId, sortOrder, result)
     local cursor = nil
     local lastCursor = nil
     local cursorRepeat = 0
     local pageCount = 0
     local startTime = tick()
-    local seenThisBranch = 0
 
     while pageCount < MAX_PAGES do
         if not State.IsScanning then break end
@@ -241,13 +171,27 @@ local function scanBranch(branchId, sortOrder)
         if #servers == 0 then break end
 
         for _, srv in ipairs(servers) do
-            seenThisBranch = seenThisBranch + 1
-            mergeServerToQueue(srv, branchId)
+            State.SeenCount = State.SeenCount + 1
+            local jobId = safeStr(srv.id, "")
+            local playing = safeNum(srv.playing, 0)
+            if jobId ~= "" and jobId ~= game.JobId then
+                if playing >= 1 and playing <= 2 then
+                    if not isBlacklisted(jobId) then
+                        result[jobId] = {
+                            id = jobId,
+                            ping = safeNum(srv.ping, 999),
+                            fps = safeNum(srv.fps, 60),
+                            playing = playing,
+                            max = safeNum(srv.maxPlayers, 12),
+                        }
+                    end
+                end
+            end
         end
 
         pageCount = pageCount + 1
         cursor = data.nextPageCursor
-        if not cursor or cursor == "" then break end
+        if not cursor or cursor == "" or cursor == "null" then break end
         if cursor == lastCursor then
             cursorRepeat = cursorRepeat + 1
             if cursorRepeat >= 2 then break end
@@ -257,7 +201,42 @@ local function scanBranch(branchId, sortOrder)
         lastCursor = cursor
         if SCAN_DELAY > 0 then task.wait(SCAN_DELAY) end
     end
-    log("info", "Nhánh " .. branchId .. " xong: " .. seenThisBranch .. " server")
+end
+
+local function scanOnePass(passTag)
+    local result = {}
+    local branches = {
+        {id = passTag .. "-A", sortOrder = "Asc"},
+        {id = passTag .. "-D", sortOrder = "Desc"},
+        {id = passTag .. "-A2", sortOrder = "Asc"},
+    }
+    local threads = {}
+    for _, br in ipairs(branches) do
+        local t = task.spawn(function()
+            local ok, err = pcall(scanBranch, br.id, br.sortOrder, result)
+            if not ok then
+                log("error", "Nhánh " .. br.id .. " crash: " .. tostring(err))
+            end
+        end)
+        table.insert(threads, t)
+    end
+    for _, t in ipairs(threads) do
+        pcall(function() task.wait(t) end)
+    end
+    return result
+end
+
+local function calculateScore(server, stability)
+    local playerScore = 0
+    if server.playing == 1 then
+        playerScore = 100
+    elseif server.playing == 2 then
+        playerScore = 40
+    end
+    local fpsScore = math.max(0, 60 - server.fps) * 1.5
+    local pingScore = math.min(server.ping, 500) / 5
+    local stabilityScore = stability * 60
+    return playerScore + fpsScore + pingScore + stabilityScore
 end
 
 local function scanServers()
@@ -266,34 +245,64 @@ local function scanServers()
     State.ScanStart = tick()
     State.Status = "Đang dò server..."
     State.FoundCount = 0
-    log("info", "Bắt đầu scan 3 nhánh song song")
+    Queue = {}
+    log("info", "Bắt đầu scan 2 pass")
 
     local startTime = tick()
     local startSeen = State.SeenCount
 
-    local branches = {
-        {id = 1, sortOrder = "Asc"},
-        {id = 2, sortOrder = "Desc"},
-        {id = 3, sortOrder = "Asc"},
-    }
+    local pass1 = scanOnePass("P1")
+    local count1 = 0
+    for _ in pairs(pass1) do count1 = count1 + 1 end
+    log("info", "Pass 1: " .. count1 .. " server")
 
-    local threads = {}
-    for _, br in ipairs(branches) do
-        local t = task.spawn(function()
-            local ok, err = pcall(scanBranch, br.id, br.sortOrder)
-            if not ok then
-                log("error", "Nhánh " .. br.id .. " crash: " .. tostring(err))
+    State.Status = "Đang phân tích..."
+    task.wait(PASS_DELAY)
+    if not State.IsScanning then
+        State.IsScanning = false
+        return
+    end
+
+    local pass2 = scanOnePass("P2")
+    local count2 = 0
+    for _ in pairs(pass2) do count2 = count2 + 1 end
+    log("info", "Pass 2: " .. count2 .. " server")
+
+    State.Status = "Đang xác nhận..."
+    task.wait(0.3)
+
+    local merged = {}
+    for id, s in pairs(pass1) do
+        local stability = 1
+        local p2 = pass2[id]
+        if p2 then
+            if p2.playing == s.playing then
+                stability = 3
+            else
+                stability = 2
             end
-        end)
-        table.insert(threads, t)
-        task.wait(PASS_DELAY)
+            s.ping = math.min(s.ping, p2.ping)
+            s.fps = math.min(s.fps, p2.fps)
+        end
+        s.stability = stability
+        s.score = calculateScore(s, stability)
+        table.insert(merged, s)
+    end
+    for id, s in pairs(pass2) do
+        if not pass1[id] then
+            s.stability = 1
+            s.score = calculateScore(s, 1)
+            table.insert(merged, s)
+        end
     end
 
-    for _, t in ipairs(threads) do
-        pcall(function() task.wait(t) end)
-    end
+    table.sort(merged, function(a, b)
+        return a.score > b.score
+    end)
 
-    task.wait(0.5)
+    for i = 1, math.min(#merged, MAX_QUEUE) do
+        table.insert(Queue, merged[i])
+    end
 
     local elapsed = tick() - startTime
     local seenDelta = State.SeenCount - startSeen
@@ -302,12 +311,7 @@ local function scanServers()
     end
 
     State.IsScanning = false
-    sortQueue()
-    for _, s in ipairs(Queue) do
-        if s.Stability >= 2 then
-            State.FoundCount = State.FoundCount + 1
-        end
-    end
+    State.FoundCount = #Queue
     log("info", "Scan xong: " .. #Queue .. " queue, tốc độ " .. State.ScanSpeed .. " sv/s")
 end
 
@@ -336,17 +340,18 @@ local function getPlayerCount()
 end
 
 local function hopToServer(server)
-    if not server or not server.JobId then return false end
+    if not server or not server.id then return false end
     if State.IsHopping then return false end
     State.IsHopping = true
     State.HopStart = tick()
     State.Status = "Đang tạo cổng kết nối..."
-    log("info", "Vào server " .. server.JobId .. " (" .. server.Stability .. " pass)")
+    log("info", "Vào server " .. server.id .. " (stab=" .. server.stability .. ", score=" .. math.floor(server.score) .. ")")
 
-    local ok = teleportToServer(server.JobId)
+    addBlacklist(server.id)
+
+    local ok = teleportToServer(server.id)
     if not ok then
         log("error", "Teleport fail")
-        addBlacklist(server.JobId)
         State.FailCount = State.FailCount + 1
         State.ConsecutiveFails = State.ConsecutiveFails + 1
         if State.ConsecutiveFails >= 6 then
@@ -364,14 +369,23 @@ local function hopToServer(server)
     return true
 end
 
-local function findCandidate()
-    sortQueue()
+local function pickCandidate()
+    local onePlayer = {}
+    local twoPlayer = {}
     for _, s in ipairs(Queue) do
-        if s.Stability >= 2 and not isBlacklisted(s.JobId) then
-            return s
+        if not isBlacklisted(s.id) then
+            if s.playing == 1 then
+                table.insert(onePlayer, s)
+            elseif s.playing == 2 then
+                table.insert(twoPlayer, s)
+            end
         end
     end
-    return nil
+    local pool = onePlayer
+    if #pool == 0 then pool = twoPlayer end
+    if #pool == 0 then return nil end
+    local topCount = math.min(3, #pool)
+    return pool[math.random(1, topCount)]
 end
 
 local function tryHop(forceManual)
@@ -391,15 +405,15 @@ local function tryHop(forceManual)
         return
     end
 
-    local candidate = findCandidate()
+    local candidate = pickCandidate()
     if not candidate then
-        State.Status = "Chưa có server cổ, scan lại"
+        State.Status = "Chưa có server, scan lại"
         task.spawn(scanServers)
         return
     end
 
     for i = #Queue, 1, -1 do
-        if Queue[i].JobId == candidate.JobId then
+        if Queue[i].id == candidate.id then
             table.remove(Queue, i)
             break
         end
@@ -407,7 +421,6 @@ local function tryHop(forceManual)
 
     local ok = hopToServer(candidate)
     if not ok then
-        addBlacklist(candidate.JobId)
         State.FailCount = State.FailCount + 1
         State.ConsecutiveFails = State.ConsecutiveFails + 1
         if State.ConsecutiveFails >= 6 then
