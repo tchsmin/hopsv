@@ -22,13 +22,12 @@ local CONFIG = {
     PassDelay = 0.5,
     ConfirmDelay = 0.3,
     PreTeleportDelay = 0.2,
-    MaxPages = 25,
-    ParallelBranches = 5,
+    MaxPages = 60,
+    ParallelBranches = 6,
     AutoHopDelay = 3,
     MaxTotalAllowed = 2,
-    ScanRetries = 6,
+    ScanRetries = 8,
     RetryWait = 1.5,
-    VerifyBeforeTeleport = true,
 }
 
 local Blacklist = {}
@@ -257,14 +256,68 @@ local function requestPage(cursor)
     return data
 end
 
-local function collectFromData(data, targetPlaying, result, lockRef)
-    if not data or not data.data then return end
-    for _, s in ipairs(data.data) do
+local DEBUG = {
+    totalSeen = 0,
+    minPlaying = 999,
+    distribution = {},
+    onePlayerFound = 0,
+}
+
+local function recordDebug(playing)
+    DEBUG.totalSeen = DEBUG.totalSeen + 1
+    if playing < DEBUG.minPlaying then DEBUG.minPlaying = playing end
+    DEBUG.distribution[playing] = (DEBUG.distribution[playing] or 0) + 1
+    if playing == 1 then DEBUG.onePlayerFound = DEBUG.onePlayerFound + 1 end
+end
+
+local function fullScanForOne()
+    local result = {}
+    local cursor = ""
+    local pages = 0
+    local lockRef = {false}
+
+    while pages < CONFIG.MaxPages do
+        local data = requestPage(cursor)
+        if not data or not data.data then break end
+
+        for _, s in ipairs(data.data) do
+            local pc = tonumber(s.playing) or 0
+            local id = s.id
+            recordDebug(pc)
+
+            if id and id ~= JOB_ID and not Blacklist[id] and pc == 1 then
+                lockRef[1] = true
+                result[id] = {
+                    id = id,
+                    ping = tonumber(s.ping) or 999,
+                    fps = tonumber(s.fps) or 60,
+                    playing = pc,
+                    max = tonumber(s.maxPlayers) or 12,
+                }
+                lockRef[1] = false
+            end
+        end
+
+        cursor = data.nextPageCursor
+        if not cursor or cursor == "" or cursor == "null" then break end
+        pages = pages + 1
+    end
+
+    return result
+end
+
+local function parallelScanForOne()
+    local result = {}
+    local lockRef = {false}
+
+    local first = requestPage("")
+    if not first then return result end
+
+    for _, s in ipairs(first.data or {}) do
         local pc = tonumber(s.playing) or 0
         local id = s.id
-        if id and id ~= JOB_ID and not Blacklist[id] and pc == targetPlaying then
-            while lockRef[1] do task.wait() end
-            lockRef[1] = true
+        recordDebug(pc)
+        if id and id ~= JOB_ID and not Blacklist[id] and pc == 1 then
             result[id] = {
                 id = id,
                 ping = tonumber(s.ping) or 999,
@@ -272,18 +325,8 @@ local function collectFromData(data, targetPlaying, result, lockRef)
                 playing = pc,
                 max = tonumber(s.maxPlayers) or 12,
             }
-            lockRef[1] = false
         end
     end
-end
-
-local function parallelScan(targetPlaying)
-    local result = {}
-    local lockRef = {false}
-
-    local first = requestPage("")
-    if not first then return result end
-    collectFromData(first, targetPlaying, result, lockRef)
 
     local rootCursor = first.nextPageCursor
     if not rootCursor or rootCursor == "" or rootCursor == "null" then
@@ -296,7 +339,20 @@ local function parallelScan(targetPlaying)
         if cur then
             local data = requestPage(cur)
             if data then
-                collectFromData(data, targetPlaying, result, lockRef)
+                for _, s in ipairs(data.data or {}) do
+                    local pc = tonumber(s.playing) or 0
+                    local id = s.id
+                    recordDebug(pc)
+                    if id and id ~= JOB_ID and not Blacklist[id] and pc == 1 then
+                        result[id] = {
+                            id = id,
+                            ping = tonumber(s.ping) or 999,
+                            fps = tonumber(s.fps) or 60,
+                            playing = pc,
+                            max = tonumber(s.maxPlayers) or 12,
+                        }
+                    end
+                end
                 if data.nextPageCursor and data.nextPageCursor ~= "" and data.nextPageCursor ~= "null" then
                     branchCursors[i + 1] = data.nextPageCursor
                 end
@@ -316,11 +372,26 @@ local function parallelScan(targetPlaying)
                 while pages < pagesPerBranch do
                     local data = requestPage(cursor)
                     if not data then break end
-                    collectFromData(data, targetPlaying, result, lockRef)
+                    for _, s in ipairs(data.data or {}) do
+                        local pc = tonumber(s.playing) or 0
+                        local id = s.id
+                        recordDebug(pc)
+                        if id and id ~= JOB_ID and not Blacklist[id] and pc == 1 then
+                            while lockRef[1] do task.wait() end
+                            lockRef[1] = true
+                            result[id] = {
+                                id = id,
+                                ping = tonumber(s.ping) or 999,
+                                fps = tonumber(s.fps) or 60,
+                                playing = pc,
+                                max = tonumber(s.maxPlayers) or 12,
+                            }
+                            lockRef[1] = false
+                        end
+                    end
                     cursor = data.nextPageCursor
                     if not cursor or cursor == "" or cursor == "null" then break end
                     pages = pages + 1
-                    if CONFIG.PageDelay > 0 then task.wait(CONFIG.PageDelay) end
                 end
             end))
         end
@@ -330,25 +401,6 @@ local function parallelScan(targetPlaying)
     task.wait(0.15)
 
     return result
-end
-
-local function verifyServer(jobId)
-    local cursor = ""
-    local pages = 0
-    while pages < 15 do
-        local data = requestPage(cursor)
-        if not data or not data.data then return false end
-        for _, s in ipairs(data.data) do
-            if s.id == jobId then
-                local pc = tonumber(s.playing) or 0
-                return pc == 1
-            end
-        end
-        cursor = data.nextPageCursor
-        if not cursor or cursor == "" or cursor == "null" then break end
-        pages = pages + 1
-    end
-    return false
 end
 
 local function calculateScore(server, stabilityBonus)
@@ -375,14 +427,14 @@ local function fastTeleport(jobId)
 end
 
 local function scanForOnePlayer()
-    local pass1 = parallelScan(1)
+    local pass1 = parallelScanForOne()
     local count1 = 0
     for _ in pairs(pass1) do count1 = count1 + 1 end
     if count1 == 0 then return nil end
 
     task.wait(CONFIG.PassDelay)
 
-    local pass2 = parallelScan(1)
+    local pass2 = parallelScanForOne()
 
     local stable = {}
     for id, s in pairs(pass2) do
@@ -420,6 +472,22 @@ local function scanForOnePlayer()
     return finalPool
 end
 
+local function dumpDebug()
+    local top = {}
+    for playing, count in pairs(DEBUG.distribution) do
+        table.insert(top, {playing = playing, count = count})
+    end
+    table.sort(top, function(a, b) return a.playing < b.playing end)
+
+    local parts = {}
+    for i = 1, math.min(8, #top) do
+        local t = top[i]
+        table.insert(parts, t.playing .. "ng:" .. t.count)
+    end
+
+    return "seen " .. DEBUG.totalSeen .. " | min " .. DEBUG.minPlaying .. " | " .. table.concat(parts, " ")
+end
+
 local function performHop()
     if IsScanning or IsHopping then return end
     IsScanning = true
@@ -433,26 +501,33 @@ local function performHop()
         return
     end
 
+    DEBUG.totalSeen = 0
+    DEBUG.minPlaying = 999
+    DEBUG.distribution = {}
+    DEBUG.onePlayerFound = 0
+
     local pool = nil
 
     for attempt = 1, CONFIG.ScanRetries do
         pool = scanForOnePlayer()
         if pool and #pool > 0 then break end
 
-        setStatus("Quét lại " .. attempt .. "/" .. CONFIG.ScanRetries, Color3.fromRGB(255, 180, 100), "...")
+        setStatus("Quét lại " .. attempt .. "/" .. CONFIG.ScanRetries .. " · " .. DEBUG.onePlayerFound .. " found", Color3.fromRGB(255, 180, 100), "...")
         task.wait(CONFIG.RetryWait)
     end
 
     if not pool or #pool == 0 then
         IsScanning = false
         ScanFailCount = ScanFailCount + 1
-        setStatus("Không có server 1 người", Color3.fromRGB(255, 120, 120), "FAIL")
+
+        local debugText = dumpDebug()
+        setStatus("Không có · " .. debugText, Color3.fromRGB(255, 120, 120), "FAIL")
+
+        Blacklist = {}
 
         if ScanFailCount >= 3 then
-            Blacklist = {}
             ScanFailCount = 0
-            setStatus("Reset blacklist · thử lại", Color3.fromRGB(255, 200, 100), "...")
-            task.wait(2)
+            task.wait(3)
         else
             task.wait(5)
         end
@@ -463,38 +538,9 @@ local function performHop()
 
     ScanFailCount = 0
 
-    local target = nil
-    local maxTry = math.min(#pool, 5)
+    local target = pool[1]
 
-    for i = 1, maxTry do
-        local candidate = pool[i]
-        if not candidate then break end
-
-        if CONFIG.VerifyBeforeTeleport then
-            setStatus("Xác minh " .. i .. "/" .. maxTry .. "...", Color3.fromRGB(255, 200, 100), "...")
-            task.wait(0.1)
-
-            if verifyServer(candidate.id) then
-                target = candidate
-                break
-            else
-                Blacklist[candidate.id] = true
-            end
-        else
-            target = candidate
-            break
-        end
-    end
-
-    if not target then
-        IsScanning = false
-        setStatus("Server bị fill · thử lại", Color3.fromRGB(255, 120, 120), "FAIL")
-        task.wait(2)
-        performHop()
-        return
-    end
-
-    setStatus("Đang vào server 1 người...", Color3.fromRGB(120, 255, 160), "HOP")
+    setStatus("Vào " .. #pool .. " pool · FPS" .. target.fps .. " · P" .. target.ping, Color3.fromRGB(120, 255, 160), "HOP")
 
     task.wait(CONFIG.PreTeleportDelay)
 
