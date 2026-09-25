@@ -35,23 +35,26 @@ end
 
 local CONFIG = {
     RequestRetries = 3,
-    RequestBackoff = 0.2,
+    RequestBackoff = 0.25,
     PageDelay = 0.02,
-    MaxPages = 35,
+    MaxPages = 40,
     ParallelBranches = 5,
-    TrackDelay = 1.2,
-    TrackPasses = 3,
-    PreTeleportVerify = 2,
+    TrackDelay = 1.5,
+    TrackPasses = 4,
+    PreTeleportVerify = 3,
+    VerifyGap = 0.3,
     TeleportTimeout = 10,
+    PostTeleportWait = 4,
     MaxTeleportAttempts = 2,
     AutoHopDelay = 3,
     MaxTotalAllowed = 2,
-    MinServerAge = 1.5,
-    MinSightings = 3,
+    MinServerAge = 2.0,
+    MinSightings = 4,
     HopCooldownBase = 6,
     HopCooldownAfterFail = 12,
     HopCooldownAfter279 = 25,
     MaxConsecutiveFail = 4,
+    MonitorTickRate = 0.5,
 }
 
 local State = {
@@ -60,15 +63,16 @@ local State = {
     IsHopping = false,
     AutoEnabled = true,
     MonitorConn = nil,
+    MonitorSlowConn = nil,
     LastPlayerCount = 0,
     TeleportPending = false,
     ScanGeneration = 0,
     LastHopTime = 0,
     ConsecutiveFail = 0,
-    LastFailReason = nil,
     Last279Time = 0,
-    TotalHops = 0,
-    TotalFails = 0,
+    CountdownActive = false,
+    CountdownGen = 0,
+    PostTeleportCheckGen = 0,
 }
 
 local function is279Error(err)
@@ -77,8 +81,12 @@ local function is279Error(err)
     return s:find("279") or s:find("unable to connect") or s:find("không thể kết nối")
 end
 
+local function getCurrentPlayerCount()
+    return #Players:GetPlayers()
+end
+
 local function requestPage(cursor)
-    if not http then return nil, "no_http" end
+    if not http then return nil end
     local cursorParam = cursor
     if type(cursorParam) ~= "string" or cursorParam == "" then
         cursorParam = ""
@@ -88,7 +96,6 @@ local function requestPage(cursor)
         PLACE_ID, cursorParam
     )
     local attempts = 0
-    local lastErr = nil
     while attempts < CONFIG.RequestRetries do
         attempts = attempts + 1
         local ok, res = pcall(function()
@@ -101,20 +108,15 @@ local function requestPage(cursor)
                     return HttpService:JSONDecode(body)
                 end)
                 if ok2 and type(data) == "table" and type(data.data) == "table" then
-                    return data, nil
+                    return data
                 end
-                lastErr = "json_fail"
-            else
-                lastErr = "empty_body"
             end
-        else
-            lastErr = tostring(res or "request_fail")
         end
         if attempts < CONFIG.RequestRetries then
             task.wait(CONFIG.RequestBackoff * attempts)
         end
     end
-    return nil, lastErr
+    return nil
 end
 
 local function extractServers(data, targetPlaying, result, lock)
@@ -143,12 +145,6 @@ local function extractServers(data, targetPlaying, result, lock)
                 else
                     result[id].lastSeen = now
                     result[id].sightings = result[id].sightings + 1
-                    if (result[id].ping or 0) > (tonumber(s.ping) or 999) then
-                        result[id].ping = tonumber(s.ping) or result[id].ping
-                    end
-                    if (result[id].fps or 60) > (tonumber(s.fps) or 60) then
-                        result[id].fps = tonumber(s.fps) or result[id].fps
-                    end
                 end
                 lock[1] = false
             end
@@ -161,7 +157,7 @@ local function parallelScan(targetPlaying, myGeneration)
     local result = {}
     local lock = {false}
 
-    local first, err = requestPage("")
+    local first = requestPage("")
     if not first then return result end
     if myGeneration ~= State.ScanGeneration then return result end
     extractServers(first, targetPlaying, result, lock)
@@ -228,8 +224,7 @@ local function parallelScan(targetPlaying, myGeneration)
     end
 
     local startTime = tick()
-    local hardTimeout = 8
-    while tick() - startTime < hardTimeout do
+    while tick() - startTime < 8 do
         local allDone = true
         for _, t in ipairs(threads) do
             if coroutine.status(t) ~= "dead" then
@@ -279,27 +274,22 @@ local function trackServers(serverIds, targetPlaying, myGeneration)
         end
 
         if pass < CONFIG.TrackPasses then
-            notify("HOP SERVER", "Track " .. pass .. "/" .. CONFIG.TrackPasses .. " · " .. (function()
-                local c = 0
-                for _ in pairs(tracked) do c = c + 1 end
-                return c
-            end)() .. " server", 2)
+            local c = 0
+            for _ in pairs(tracked) do c = c + 1 end
+            notify("HOP SERVER", "Track " .. pass .. "/" .. CONFIG.TrackPasses .. " · " .. c .. " server", 2)
         end
     end
 
     return tracked
 end
 
-local function verifyServerLive(jobId)
+local function verifyServerOnePlayer(jobId)
     if not http then return false, "no_http" end
     local cursor = ""
     local pages = 0
-    local maxPages = 12
-    while pages < maxPages do
-        local data, err = requestPage(cursor)
-        if not data then
-            return true, nil
-        end
+    while pages < 12 do
+        local data = requestPage(cursor)
+        if not data then return false, "request_fail" end
         if type(data.data) == "table" then
             for _, s in ipairs(data.data) do
                 if type(s) == "table" and s.id == jobId then
@@ -319,49 +309,43 @@ local function verifyServerLive(jobId)
         cursor = nc
         pages = pages + 1
     end
-    return true, nil
+    return false, "not_found"
 end
 
 local function attemptTeleport(jobId)
-    local success = false
-    local lastErr = nil
-
     local ok1, err1 = pcall(function()
         local opts = Instance.new("TeleportOptions")
         opts.ServerInstanceId = jobId
         TeleportService:TeleportAsync(PLACE_ID, {LocalPlayer}, opts)
     end)
     if ok1 then return true, nil end
-    lastErr = err1
 
     local ok2, err2 = pcall(function()
         TeleportService:TeleportToPlaceInstance(PLACE_ID, jobId, LocalPlayer)
     end)
     if ok2 then return true, nil end
-    lastErr = err2
 
     local ok3, err3 = pcall(function()
         TeleportService:TeleportToPlaceInstance(PLACE_ID, jobId)
     end)
     if ok3 then return true, nil end
-    lastErr = err3
 
-    return false, lastErr
+    return false, err1 or err2 or err3
 end
 
-local function teleportWithFullVerify(target)
+local function teleportWithHeavyVerify(target)
     if not target or type(target.id) ~= "string" then
         return false, "invalid_target"
     end
 
     for check = 1, CONFIG.PreTeleportVerify do
-        local live, reason = verifyServerLive(target.id)
+        local live, reason = verifyServerOnePlayer(target.id)
         if not live then
             State.Blacklist[target.id] = true
-            return false, "verify_fail_" .. tostring(reason)
+            return false, "verify_" .. tostring(reason)
         end
         if check < CONFIG.PreTeleportVerify then
-            task.wait(0.2)
+            task.wait(CONFIG.VerifyGap)
         end
     end
 
@@ -402,10 +386,10 @@ local function scoreAndSort(servers)
         if age >= CONFIG.MinServerAge and sightings >= CONFIG.MinSightings then
             s.age = age
             s.score = 0
-            s.score = s.score + sightings * 200
-            s.score = s.score + age * 100
-            s.score = s.score + math.max(0, 60 - (s.fps or 60)) * 3
-            s.score = s.score + math.min(s.ping or 999, 500) / 3
+            s.score = s.score + sightings * 500
+            s.score = s.score + age * 200
+            s.score = s.score + math.max(0, 60 - (s.fps or 60)) * 5
+            s.score = s.score + math.min(s.ping or 999, 500) / 2
             table.insert(list, s)
         end
     end
@@ -433,7 +417,7 @@ local function findBestOnePlayerServer(myGeneration)
         return nil, "no_server"
     end
 
-    notify("HOP SERVER", "Có " .. count1 .. " ứng viên · track " .. CONFIG.TrackPasses .. " lần", 3)
+    notify("HOP SERVER", "Có " .. count1 .. " ứng viên · track " .. CONFIG.TrackPasses .. " pass", 3)
 
     local tracked = trackServers(serverIds, 1, myGeneration)
     if myGeneration ~= State.ScanGeneration then return nil, "cancel" end
@@ -445,9 +429,23 @@ local function findBestOnePlayerServer(myGeneration)
 
     notify("HOP SERVER", "Chọn từ " .. #candidates .. " server ổn định", 3)
 
-    local topCount = math.min(3, #candidates)
-    local chosen = candidates[math.random(1, topCount)]
-    return chosen, nil
+    return candidates[1], nil
+end
+
+local function postTeleportVerify(myGen)
+    task.wait(CONFIG.PostTeleportWait)
+    if myGen ~= State.PostTeleportCheckGen then return end
+    if State.IsHopping or State.IsScanning or State.TeleportPending then return end
+
+    local count = getCurrentPlayerCount()
+    if count > CONFIG.MaxTotalAllowed then
+        notify("HOP SERVER", "Vừa vào server " .. count .. " người · hop lại", 3)
+        task.wait(1)
+        if myGen ~= State.PostTeleportCheckGen then return end
+        performHop()
+    else
+        notify("HOP SERVER", "Server " .. count .. " người · OK", 3)
+    end
 end
 
 local function performHop()
@@ -463,7 +461,9 @@ local function performHop()
     end
     if now - State.LastHopTime < cooldown then
         local wait = math.ceil(cooldown - (now - State.LastHopTime))
-        notify("HOP SERVER", "Cooldown " .. wait .. "s", 2)
+        if wait > 2 then
+            notify("HOP SERVER", "Cooldown " .. wait .. "s", 2)
+        end
         task.wait(cooldown - (now - State.LastHopTime))
     end
 
@@ -481,9 +481,7 @@ local function performHop()
     if not target then
         State.IsScanning = false
         State.ConsecutiveFail = State.ConsecutiveFail + 1
-        State.TotalFails = State.TotalFails + 1
         State.LastHopTime = tick()
-        State.LastFailReason = reason
 
         if reason == "cancel" then return end
 
@@ -492,7 +490,7 @@ local function performHop()
             task.wait(20)
             State.ConsecutiveFail = 0
         else
-            notify("HOP SERVER", "Không có server · thử lại sau 5s", 3)
+            notify("HOP SERVER", "Không có server 1 người · thử lại sau 5s", 3)
             task.wait(5)
         end
         return
@@ -521,7 +519,7 @@ local function performHop()
             return
         end
 
-        local ok, reason2 = teleportWithFullVerify(target)
+        local ok, reason2 = teleportWithHeavyVerify(target)
         if ok then
             success = true
             break
@@ -535,21 +533,30 @@ local function performHop()
 
     if success then
         State.ConsecutiveFail = 0
-        State.TotalHops = State.TotalHops + 1
+        State.PostTeleportCheckGen = State.PostTeleportCheckGen + 1
+        local myPostGen = State.PostTeleportCheckGen
+        task.spawn(function()
+            postTeleportVerify(myPostGen)
+        end)
     else
         State.ConsecutiveFail = State.ConsecutiveFail + 1
-        State.TotalFails = State.TotalFails + 1
 
         if failReason == "279" then
             notify("HOP SERVER", "Lỗi 279 · nghỉ dài", 4)
             State.Last279Time = tick()
             task.wait(CONFIG.HopCooldownAfter279)
-        elseif failReason and failReason:find("verify_fail") then
-            notify("HOP SERVER", "Server đã đầy · đổi server", 3)
+        elseif failReason and failReason:find("verify_filled") then
+            notify("HOP SERVER", "Server đã đầy · tìm server khác", 3)
             task.wait(2)
+            performHop()
+        elseif failReason and failReason:find("verify_") then
+            notify("HOP SERVER", "Server biến mất · tìm server khác", 3)
+            task.wait(2)
+            performHop()
         elseif failReason == "stuck" then
-            notify("HOP SERVER", "Kẹt · thử server khác", 3)
+            notify("HOP SERVER", "Kẹt loading · thử server khác", 3)
             task.wait(3)
+            performHop()
         else
             notify("HOP SERVER", "Vào fail · đợi " .. CONFIG.HopCooldownAfterFail .. "s", 3)
             task.wait(CONFIG.HopCooldownAfterFail)
@@ -557,52 +564,111 @@ local function performHop()
     end
 end
 
-local function startMonitor()
+local function triggerHopCountdown(count)
+    if State.CountdownActive then return end
+    State.CountdownActive = true
+    State.CountdownGen = State.CountdownGen + 1
+    local myGen = State.CountdownGen
+
+    task.spawn(function()
+        for i = CONFIG.AutoHopDelay, 1, -1 do
+            if myGen ~= State.CountdownGen then
+                State.CountdownActive = false
+                return
+            end
+            if not State.AutoEnabled then
+                State.CountdownActive = false
+                return
+            end
+            if State.IsHopping or State.IsScanning then
+                State.CountdownActive = false
+                return
+            end
+
+            local cnt = getCurrentPlayerCount()
+            if cnt <= CONFIG.MaxTotalAllowed then
+                notify("HOP SERVER", "Đã về " .. cnt .. " người · hủy hop", 3)
+                State.CountdownActive = false
+                return
+            end
+
+            if i > 1 then
+                notify("HOP SERVER", "Hop sau " .. i .. "s · " .. cnt .. " người", 2)
+            end
+            task.wait(1)
+        end
+
+        if myGen ~= State.CountdownGen then
+            State.CountdownActive = false
+            return
+        end
+
+        State.CountdownActive = false
+        local cnt = getCurrentPlayerCount()
+        if cnt > CONFIG.MaxTotalAllowed then
+            performHop()
+        end
+    end)
+end
+
+local function cancelHopCountdown()
+    State.CountdownGen = State.CountdownGen + 1
+    State.CountdownActive = false
+end
+
+local function startMonitorFast()
     if State.MonitorConn then State.MonitorConn:Disconnect() end
     State.MonitorConn = RunService.Heartbeat:Connect(function()
         if not State.AutoEnabled then return end
         if State.IsHopping or State.IsScanning or State.TeleportPending then return end
 
-        local count = #Players:GetPlayers()
+        local count = getCurrentPlayerCount()
         if count == State.LastPlayerCount then return end
+
+        local oldCount = State.LastPlayerCount
         State.LastPlayerCount = count
 
         if count > CONFIG.MaxTotalAllowed then
-            notify("HOP SERVER", "Server " .. count .. " người · chờ " .. CONFIG.AutoHopDelay .. "s", 3)
+            if oldCount <= CONFIG.MaxTotalAllowed then
+                notify("HOP SERVER", "Phát hiện " .. count .. " người · sẽ hop", 3)
+            end
+            triggerHopCountdown(count)
+        else
+            if oldCount > CONFIG.MaxTotalAllowed then
+                cancelHopCountdown()
+            end
+        end
+    end)
+end
 
-            task.spawn(function()
-                for i = CONFIG.AutoHopDelay, 1, -1 do
-                    if not State.AutoEnabled then return end
-                    if State.IsHopping or State.IsScanning then return end
-                    local cnt = #Players:GetPlayers()
-                    if cnt <= CONFIG.MaxTotalAllowed then
-                        notify("HOP SERVER", "Đã về " .. cnt .. " người · hủy", 3)
-                        return
-                    end
-                    if i > 1 then
-                        notify("HOP SERVER", "Hop sau " .. i .. "s · " .. cnt .. " người", 2)
-                    end
-                    task.wait(1)
-                end
-
-                if State.IsHopping or State.IsScanning then return end
-                if #Players:GetPlayers() > CONFIG.MaxTotalAllowed then
-                    performHop()
-                end
-            end)
+local function startMonitorSlow()
+    if State.MonitorSlowConn then State.MonitorSlowConn:Disconnect() end
+    State.MonitorSlowConn = task.spawn(function()
+        while true do
+            task.wait(10)
+            if not State.AutoEnabled then continue end
+            local count = getCurrentPlayerCount()
+            if count <= CONFIG.MaxTotalAllowed then
+                notify("HOP SERVER", "Server " .. count .. " người · ổn định", 2)
+            end
         end
     end)
 end
 
 notify("HOP SERVER", "Đang khởi động...", 3)
-startMonitor()
+
+State.LastPlayerCount = getCurrentPlayerCount()
+notify("HOP SERVER", "Server hiện tại: " .. State.LastPlayerCount .. " người", 3)
+
+startMonitorFast()
 
 task.spawn(function()
-    task.wait(2)
-    local count = #Players:GetPlayers()
+    task.wait(3)
+    local count = getCurrentPlayerCount()
     if count > CONFIG.MaxTotalAllowed then
+        notify("HOP SERVER", "Server đông · hop ngay", 3)
         performHop()
     else
-        notify("HOP SERVER", "Đang chạy · chờ người vào", 3)
+        notify("HOP SERVER", "Đang chạy · sẽ hop khi ≥ 3 người", 4)
     end
 end)
