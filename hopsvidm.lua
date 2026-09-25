@@ -36,20 +36,18 @@ end
 
 local CONFIG = {
     ScanPages = 20,
-    TrackPasses = 5,
+    TrackPasses = 4,
     TrackDelay = 1.5,
-    MinAge = 4,
-    MinSightings = 5,
-    VerifyAttempts = 5,
-    VerifyGap = 0.6,
-    TeleportTimeout = 12,
+    MinAge = 3,
+    MinSightings = 4,
+    VerifyAttempts = 4,
+    VerifyGap = 0.5,
+    TeleportTimeout = 8,
     PostCheckDelay = 5,
-    PostLeaderboardWait = 8,
-    RetryDelay = 4,
-    BlacklistTTL = 300,
+    RetryDelay = 3,
+    BlacklistTTL = 240,
     RequestRetries = 3,
-    PopupCheckInterval = 0.2,
-    StuckTimeout = 45,
+    PopupCheckInterval = 0.15,
 }
 
 local State = {
@@ -59,9 +57,14 @@ local State = {
     LastPlayerCount = 0,
     CurrentTargetId = nil,
     NeedHop = false,
-    LastLoopTime = 0,
-    VerifyCache = {},
+    BusyStartTime = 0,
 }
+
+local function resetBusy()
+    State.IsBusy = false
+    State.BusyStartTime = 0
+    State.CurrentTargetId = nil
+end
 
 local function cleanBlacklist()
     local now = tick()
@@ -72,19 +75,23 @@ local function cleanBlacklist()
     end
 end
 
-local function killPopups()
+local function nukeAllPopups()
     pcall(function()
         local promptGui = CoreGui:FindFirstChild("RobloxPromptGui")
-        if not promptGui then return end
-        local overlay = promptGui:FindFirstChild("promptOverlay")
-        if overlay then
-            overlay.Parent = nil
-            overlay:Destroy()
+        if promptGui then
+            local overlay = promptGui:FindFirstChild("promptOverlay")
+            if overlay then
+                overlay.Parent = nil
+                overlay:Destroy()
+            end
+            for _, child in ipairs(promptGui:GetChildren()) do
+                child:Destroy()
+            end
         end
     end)
 end
 
-local function clickPopupOk()
+local function findAndClickOk()
     local clicked = false
     pcall(function()
         local promptGui = CoreGui:FindFirstChild("RobloxPromptGui")
@@ -94,7 +101,7 @@ local function clickPopupOk()
 
         for _, obj in ipairs(overlay:GetDescendants()) do
             if obj:IsA("TextButton") then
-                local txt = obj.Text or ""
+                local txt = tostring(obj.Text or "")
                 if txt == "Ok" or txt == "OK" or txt:lower() == "ok" then
                     if firesignal then
                         pcall(function() firesignal(obj.MouseButton1Click) end)
@@ -114,12 +121,20 @@ end
 pcall(function()
     TeleportService.TeleportInitFailed:Connect(function(player, result, errMsg)
         if player ~= LocalPlayer then return end
+
         if State.CurrentTargetId then
             State.Blacklist[State.CurrentTargetId] = tick()
         end
-        State.IsBusy = false
+
+        resetBusy()
         State.NeedHop = true
-        notify("Lỗi " .. tostring(errMsg or "?") .. " · block server · dò lại", 4)
+
+        notify("Lỗi " .. tostring(errMsg or "?") .. " · dò lại", 4)
+
+        task.spawn(function()
+            task.wait(0.1)
+            nukeAllPopups()
+        end)
     end)
 end)
 
@@ -215,9 +230,7 @@ local function trackServers(pool, targetPc)
 
     for pass = 1, CONFIG.TrackPasses do
         task.wait(CONFIG.TrackDelay)
-
         local passResult = scanPass(targetPc, CONFIG.ScanPages, {})
-
         local now = tick()
         for id, s in pairs(passResult) do
             if tracked[id] then
@@ -227,10 +240,6 @@ local function trackServers(pool, targetPc)
                 tracked[id].fps = s.fps
             end
         end
-
-        local alive = 0
-        for _ in pairs(tracked) do alive = alive + 1 end
-        notify("Track " .. pass .. "/" .. CONFIG.TrackPasses .. " · " .. alive, 2)
     end
 
     local stable = {}
@@ -247,21 +256,17 @@ end
 
 local function verifyServerNow(jobId)
     if not http then return false end
-
     local cursor = ""
     local pages = 0
-    local maxPages = 15
 
-    while pages < maxPages do
+    while pages < 15 do
         local url = string.format(
             "https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100&cursor=%s",
             PLACE_ID, cursor or ""
         )
-
         local ok, res = pcall(function()
             return http({ Url = url, Method = "GET", Headers = { ["Accept"] = "application/json" } })
         end)
-
         if ok and res then
             local body = res.Body or res.body
             if type(body) == "string" and #body > 0 then
@@ -289,7 +294,6 @@ local function verifyServerNow(jobId)
             return false
         end
     end
-
     return false
 end
 
@@ -322,29 +326,26 @@ local function attemptTeleport(jobId)
     return false
 end
 
-local function findServer()
-    notify("Đang quét server 1 người", 3)
+local function doOneHop()
+    cleanBlacklist()
 
     local pool = scanPass(1, CONFIG.ScanPages, {})
-
     local count1 = 0
     for _ in pairs(pool) do count1 = count1 + 1 end
 
     if count1 == 0 then
-        notify("Không có server 1 người · thử lại", 3)
-        return nil
+        return false, "no_server"
     end
 
-    notify("Có " .. count1 .. " ứng viên · track " .. CONFIG.TrackPasses .. " pass", 3)
+    notify("Track " .. count1 .. " server", 3)
 
     local stable = trackServers(pool, 1)
 
     if #stable == 0 then
-        notify("Không có server ổn định · thử lại", 3)
-        return nil
+        return false, "no_stable"
     end
 
-    notify("Có " .. #stable .. " server ổn định · chọn", 3)
+    notify("Có " .. #stable .. " server ổn định", 3)
 
     for _, s in ipairs(stable) do
         s.score = calculateScore(s)
@@ -354,19 +355,13 @@ local function findServer()
         return a.score > b.score
     end)
 
-    return stable
-end
-
-local function verifyAndTeleport(candidates)
-    if #candidates == 0 then return false end
-
-    local maxTry = math.min(#candidates, 5)
+    local maxTry = math.min(#stable, 5)
 
     for i = 1, maxTry do
-        local target = candidates[i]
+        local target = stable[i]
         if not target then break end
 
-        notify("Verify " .. i .. "/" .. maxTry .. " · " .. target.playing .. "ng FPS" .. target.fps, 3)
+        notify("Verify " .. i .. "/" .. maxTry, 2)
 
         local allVerified = true
         for check = 1, CONFIG.VerifyAttempts do
@@ -381,11 +376,11 @@ local function verifyAndTeleport(candidates)
 
         if not allVerified then
             State.Blacklist[target.id] = tick()
-            notify("Server " .. i .. " đã full · thử server khác", 3)
         else
-            notify("Server OK · teleport " .. target.playing .. "ng", 3)
             State.CurrentTargetId = target.id
             State.Blacklist[target.id] = tick()
+
+            notify("Vào " .. target.playing .. "ng FPS" .. target.fps, 3)
 
             local success = false
             for attempt = 1, 2 do
@@ -400,73 +395,105 @@ local function verifyAndTeleport(candidates)
                 local startTime = tick()
                 while tick() - startTime < CONFIG.TeleportTimeout do
                     if game.JobId ~= JOB_ID then
-                        return true
+                        return true, nil
                     end
                     task.wait(0.2)
                 end
+                State.Blacklist[target.id] = tick()
             end
-
-            notify("Teleport fail · thử server khác", 3)
         end
 
-        task.wait(1)
+        task.wait(0.5)
     end
 
-    return false
+    return false, "all_failed"
 end
 
-local function performHop()
-    if State.IsBusy then return false end
+local function runHopCycle()
+    if State.IsBusy then return end
     State.IsBusy = true
+    State.BusyStartTime = tick()
     State.NeedHop = false
 
-    cleanBlacklist()
-
-    local candidates = findServer()
-
-    if not candidates or #candidates == 0 then
-        State.IsBusy = false
-        notify("Không có server · dò lại sau " .. CONFIG.RetryDelay .. "s", 3)
-        task.wait(CONFIG.RetryDelay)
-        return false
-    end
-
-    local success = verifyAndTeleport(candidates)
-
-    State.IsBusy = false
+    local success, reason = doOneHop()
 
     if success then
-        notify("Đã vào server", 3)
         task.wait(CONFIG.PostCheckDelay)
-
         local count = #Players:GetPlayers()
         if count > 2 then
-            notify("Vào nhầm server " .. count .. " người · dò lại", 4)
+            notify("Server " .. count .. " ng · dò lại", 3)
             State.NeedHop = true
-            return false
+        else
+            notify("OK · " .. count .. " người", 3)
         end
-
-        notify("OK · server " .. count .. " người", 3)
-        return true
     else
-        notify("Không vào được · dò lại sau " .. CONFIG.RetryDelay .. "s", 3)
-        task.wait(CONFIG.RetryDelay)
-        return false
+        notify("Fail · dò lại", 3)
+        State.NeedHop = true
     end
+
+    resetBusy()
+end
+
+local function startMainLoop()
+    task.spawn(function()
+        while true do
+            task.wait(1)
+
+            local ok, err = pcall(function()
+                if not State.AutoEnabled then return end
+
+                if State.IsBusy then
+                    if tick() - State.BusyStartTime > 60 then
+                        resetBusy()
+                        State.NeedHop = true
+                    end
+                    return
+                end
+
+                local count = #Players:GetPlayers()
+                if count > 2 then
+                    State.NeedHop = true
+                end
+
+                if State.NeedHop then
+                    runHopCycle()
+                end
+            end)
+
+            if not ok then
+                resetBusy()
+                State.NeedHop = true
+            end
+        end
+    end)
 end
 
 local function startPopupKiller()
     task.spawn(function()
         while true do
             task.wait(CONFIG.PopupCheckInterval)
-            local clicked = clickPopupOk()
-            if clicked then
-                killPopups()
-                State.IsBusy = false
-                State.NeedHop = true
-                notify("Đã đóng popup · dò lại", 3)
-                task.wait(1.5)
-            end
+
+            local ok = pcall(function()
+                local promptGui = CoreGui:FindFirstChild("RobloxPromptGui")
+                if not promptGui then return end
+
+                local overlay = promptGui:FindFirstChild("promptOverlay")
+                if not overlay then return end
+
+                local clicked = findAndClickOk()
+
+                task.wait(0.05)
+
+                if promptGui:FindFirstChild("promptOverlay") then
+                    nukeAllPopups()
+                    resetBusy()
+                    State.NeedHop = true
+                    notify("Đã xử lý popup · dò lại", 3)
+                elseif clicked then
+                    resetBusy()
+                    State.NeedHop = true
+                end
+            end)
         end
     end)
 end
@@ -475,58 +502,28 @@ local function startPlayerMonitor()
     task.spawn(function()
         while true do
             task.wait(0.5)
-            if not State.AutoEnabled then continue end
-            if State.IsBusy then continue end
 
-            local count = #Players:GetPlayers()
-            if count == State.LastPlayerCount then continue end
+            local ok = pcall(function()
+                if not State.AutoEnabled then return end
 
-            local oldCount = State.LastPlayerCount
-            State.LastPlayerCount = count
+                local count = #Players:GetPlayers()
+                if count == State.LastPlayerCount then return end
 
-            if count > 2 then
-                if oldCount <= 2 then
-                    notify("Có " .. count .. " người · sẽ hop", 3)
-                end
-                State.NeedHop = true
-            end
-        end
-    end)
-end
+                local oldCount = State.LastPlayerCount
+                State.LastPlayerCount = count
 
-local function startMainLoop()
-    task.spawn(function()
-        while true do
-            task.wait(1)
-
-            if not State.AutoEnabled then continue end
-
-            if State.IsBusy then
-                if tick() - State.LastLoopTime > CONFIG.StuckTimeout then
-                    State.IsBusy = false
+                if count > 2 then
+                    if oldCount <= 2 then
+                        notify("Có " .. count .. " người · sẽ hop", 3)
+                    end
                     State.NeedHop = true
-                    notify("Reset · dò lại", 3)
                 end
-                State.LastLoopTime = tick()
-                continue
-            end
-
-            State.LastLoopTime = tick()
-
-            local count = #Players:GetPlayers()
-            if count > 2 then
-                State.NeedHop = true
-            end
-
-            if State.NeedHop then
-                performHop()
-            end
+            end)
         end
     end)
 end
 
 State.LastPlayerCount = #Players:GetPlayers()
-State.LastLoopTime = tick()
 
 startPopupKiller()
 startPlayerMonitor()
