@@ -13,7 +13,7 @@ local function notify(text, duration)
         game:GetService("StarterGui"):SetCore("SendNotification", {
             Title = "HOP SERVER",
             Text = tostring(text),
-            Duration = duration or 4
+            Duration = duration or 3
         })
     end)
 end
@@ -34,106 +34,60 @@ if not http then
     return
 end
 
-local CONFIG = {
-    ScanPages = 20,
-    TrackPasses = 4,
-    TrackDelay = 1.5,
-    MinAge = 3,
-    MinSightings = 4,
-    VerifyAttempts = 4,
-    VerifyGap = 0.5,
-    TeleportTimeout = 8,
-    PostCheckDelay = 5,
-    RetryDelay = 3,
-    BlacklistTTL = 240,
-    RequestRetries = 3,
-    PopupCheckInterval = 0.15,
-}
+local Blacklist = {}
+local IsBusy = false
+local LastPlayerCount = #Players:GetPlayers()
+local NeedHop = false
+local CurrentTarget = nil
+local BusyStart = 0
 
-local State = {
-    Blacklist = {},
-    IsBusy = false,
-    AutoEnabled = true,
-    LastPlayerCount = 0,
-    CurrentTargetId = nil,
-    NeedHop = false,
-    BusyStartTime = 0,
-}
-
-local function resetBusy()
-    State.IsBusy = false
-    State.BusyStartTime = 0
-    State.CurrentTargetId = nil
-end
-
-local function cleanBlacklist()
-    local now = tick()
-    for id, t in pairs(State.Blacklist) do
-        if now - t > CONFIG.BlacklistTTL then
-            State.Blacklist[id] = nil
-        end
-    end
-end
-
-local function nukeAllPopups()
+local function nukePopups()
     pcall(function()
-        local promptGui = CoreGui:FindFirstChild("RobloxPromptGui")
-        if promptGui then
-            local overlay = promptGui:FindFirstChild("promptOverlay")
-            if overlay then
-                overlay.Parent = nil
-                overlay:Destroy()
-            end
-            for _, child in ipairs(promptGui:GetChildren()) do
-                child:Destroy()
+        local pg = CoreGui:FindFirstChild("RobloxPromptGui")
+        if pg then
+            local ov = pg:FindFirstChild("promptOverlay")
+            if ov then
+                ov.Parent = nil
+                ov:Destroy()
             end
         end
     end)
 end
 
-local function findAndClickOk()
-    local clicked = false
+local function clickOk()
     pcall(function()
-        local promptGui = CoreGui:FindFirstChild("RobloxPromptGui")
-        if not promptGui then return end
-        local overlay = promptGui:FindFirstChild("promptOverlay")
-        if not overlay then return end
-
-        for _, obj in ipairs(overlay:GetDescendants()) do
-            if obj:IsA("TextButton") then
-                local txt = tostring(obj.Text or "")
-                if txt == "Ok" or txt == "OK" or txt:lower() == "ok" then
+        local pg = CoreGui:FindFirstChild("RobloxPromptGui")
+        if not pg then return end
+        local ov = pg:FindFirstChild("promptOverlay")
+        if not ov then return end
+        for _, o in ipairs(ov:GetDescendants()) do
+            if o:IsA("TextButton") then
+                local t = tostring(o.Text or "")
+                if t == "Ok" or t == "OK" or t:lower() == "ok" then
                     if firesignal then
-                        pcall(function() firesignal(obj.MouseButton1Click) end)
-                        pcall(function() firesignal(obj.Activated) end)
+                        pcall(function() firesignal(o.MouseButton1Click) end)
                     end
-                    if obj.Activate then
-                        pcall(function() obj:Activate() end)
+                    if o.Activate then
+                        pcall(function() o:Activate() end)
                     end
-                    clicked = true
                 end
             end
         end
     end)
-    return clicked
 end
 
 pcall(function()
-    TeleportService.TeleportInitFailed:Connect(function(player, result, errMsg)
+    TeleportService.TeleportInitFailed:Connect(function(player)
         if player ~= LocalPlayer then return end
-
-        if State.CurrentTargetId then
-            State.Blacklist[State.CurrentTargetId] = tick()
+        if CurrentTarget then
+            Blacklist[CurrentTarget] = tick()
         end
-
-        resetBusy()
-        State.NeedHop = true
-
-        notify("Lỗi " .. tostring(errMsg or "?") .. " · dò lại", 4)
-
+        IsBusy = false
+        NeedHop = true
         task.spawn(function()
             task.wait(0.1)
-            nukeAllPopups()
+            clickOk()
+            nukePopups()
         end)
     end)
 end)
@@ -144,7 +98,7 @@ local function requestPage(cursor)
         "https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100&cursor=%s",
         PLACE_ID, cursor or ""
     )
-    for attempt = 1, CONFIG.RequestRetries do
+    for i = 1, 2 do
         local ok, res = pcall(function()
             return http({ Url = url, Method = "GET", Headers = { ["Accept"] = "application/json" } })
         end)
@@ -164,8 +118,8 @@ local function requestPage(cursor)
     return nil
 end
 
-local function scanPass(targetPc, maxPages, intoResult)
-    local result = intoResult or {}
+local function scanPass(maxPages)
+    local result = {}
     local cursor = ""
     local pages = 0
 
@@ -174,36 +128,24 @@ local function scanPass(targetPc, maxPages, intoResult)
         if not data then break end
 
         local cnt = 0
-        local now = tick()
         for _, s in ipairs(data.data) do
             cnt = cnt + 1
             local pc = tonumber(s.playing) or 0
             local id = s.id
-            if type(id) == "string" and id ~= JOB_ID and not State.Blacklist[id] then
-                if pc == targetPc then
-                    if not result[id] then
-                        result[id] = {
-                            id = id,
-                            ping = tonumber(s.ping) or 999,
-                            fps = tonumber(s.fps) or 60,
-                            playing = pc,
-                            max = tonumber(s.maxPlayers) or 12,
-                            firstSeen = now,
-                            lastSeen = now,
-                            sightings = 1,
-                        }
-                    else
-                        result[id].lastSeen = now
-                        result[id].sightings = result[id].sightings + 1
-                        result[id].ping = tonumber(s.ping) or result[id].ping
-                        result[id].fps = tonumber(s.fps) or result[id].fps
-                    end
+            if type(id) == "string" and id ~= JOB_ID and not Blacklist[id] then
+                if pc >= 1 and pc <= 2 then
+                    result[id] = {
+                        id = id,
+                        ping = tonumber(s.ping) or 999,
+                        fps = tonumber(s.fps) or 60,
+                        playing = pc,
+                        max = tonumber(s.maxPlayers) or 12,
+                    }
                 end
             end
         end
 
         if cnt == 0 then break end
-
         cursor = data.nextPageCursor
         if not cursor or cursor == "" or cursor == "null" then break end
         pages = pages + 1
@@ -213,327 +155,217 @@ local function scanPass(targetPc, maxPages, intoResult)
     return result
 end
 
-local function trackServers(pool, targetPc)
-    local tracked = {}
-    for id, s in pairs(pool) do
-        tracked[id] = {
-            id = id,
-            ping = s.ping,
-            fps = s.fps,
-            playing = s.playing,
-            max = s.max,
-            firstSeen = s.firstSeen,
-            lastSeen = s.lastSeen,
-            sightings = s.sightings,
-        }
-    end
-
-    for pass = 1, CONFIG.TrackPasses do
-        task.wait(CONFIG.TrackDelay)
-        local passResult = scanPass(targetPc, CONFIG.ScanPages, {})
-        local now = tick()
-        for id, s in pairs(passResult) do
-            if tracked[id] then
-                tracked[id].lastSeen = now
-                tracked[id].sightings = tracked[id].sightings + 1
-                tracked[id].ping = s.ping
-                tracked[id].fps = s.fps
-            end
-        end
-    end
-
-    local stable = {}
-    for id, s in pairs(tracked) do
-        local age = (s.lastSeen or 0) - (s.firstSeen or 0)
-        if age >= CONFIG.MinAge and s.sightings >= CONFIG.MinSightings then
-            s.age = age
-            table.insert(stable, s)
-        end
-    end
-
-    return stable
-end
-
-local function verifyServerNow(jobId)
-    if not http then return false end
-    local cursor = ""
-    local pages = 0
-
-    while pages < 15 do
-        local url = string.format(
-            "https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100&cursor=%s",
-            PLACE_ID, cursor or ""
-        )
-        local ok, res = pcall(function()
-            return http({ Url = url, Method = "GET", Headers = { ["Accept"] = "application/json" } })
-        end)
-        if ok and res then
-            local body = res.Body or res.body
-            if type(body) == "string" and #body > 0 then
-                local ok2, data = pcall(function()
-                    return HttpService:JSONDecode(body)
-                end)
-                if ok2 and type(data) == "table" and type(data.data) == "table" then
-                    for _, s in ipairs(data.data) do
-                        if type(s) == "table" and s.id == jobId then
-                            local pc = tonumber(s.playing) or 0
-                            return pc == 1
-                        end
-                    end
-                    cursor = data.nextPageCursor
-                    if not cursor or cursor == "" or cursor == "null" then return false end
-                    pages = pages + 1
-                    task.wait(0.05)
-                else
-                    return false
-                end
-            else
-                return false
-            end
-        else
-            return false
-        end
-    end
-    return false
-end
-
-local function calculateScore(server)
-    local fpsScore = math.max(0, 60 - server.fps) * 2
-    local pingScore = math.min(server.ping, 500) / 3
-    local ageScore = (server.age or 0) * 100
-    local sightScore = (server.sightings or 0) * 200
-    return ageScore + sightScore + fpsScore + pingScore
+local function score(server, stability)
+    local p = 0
+    if server.playing == 1 then p = 500
+    elseif server.playing == 2 then p = 100 end
+    local f = math.max(0, 60 - server.fps) * 1.5
+    local pi = math.min(server.ping, 500) / 5
+    return p + f + pi + stability * 60
 end
 
 local function attemptTeleport(jobId)
-    local ok1 = pcall(function()
+    local ok = pcall(function()
         local opts = Instance.new("TeleportOptions")
         opts.ServerInstanceId = jobId
         TeleportService:TeleportAsync(PLACE_ID, {LocalPlayer}, opts)
     end)
-    if ok1 then return true end
-
-    local ok2 = pcall(function()
+    if ok then return true end
+    ok = pcall(function()
         TeleportService:TeleportToPlaceInstance(PLACE_ID, jobId, LocalPlayer)
     end)
-    if ok2 then return true end
-
-    local ok3 = pcall(function()
-        TeleportService:TeleportToPlaceInstance(PLACE_ID, jobId)
-    end)
-    if ok3 then return true end
-
-    return false
+    return ok
 end
 
-local function doOneHop()
-    cleanBlacklist()
+local function findServer()
+    notify("Đang tìm server", 2)
 
-    local pool = scanPass(1, CONFIG.ScanPages, {})
-    local count1 = 0
-    for _ in pairs(pool) do count1 = count1 + 1 end
+    local pass1 = scanPass(12)
+    local c1 = 0
+    for _ in pairs(pass1) do c1 = c1 + 1 end
 
-    if count1 == 0 then
-        return false, "no_server"
+    if c1 == 0 then return nil end
+
+    notify("Có " .. c1 .. " server · chờ 2.5s", 2)
+    task.wait(2.5)
+
+    local pass2 = scanPass(12)
+
+    local stable = {}
+    for id, s in pairs(pass2) do
+        if pass1[id] then
+            s.stability = 2
+            if s.playing == pass1[id].playing then
+                s.stability = 3
+            end
+            table.insert(stable, s)
+        end
     end
-
-    notify("Track " .. count1 .. " server", 3)
-
-    local stable = trackServers(pool, 1)
 
     if #stable == 0 then
-        return false, "no_stable"
+        for id, s in pairs(pass1) do
+            s.stability = 1
+            table.insert(stable, s)
+        end
     end
 
-    notify("Có " .. #stable .. " server ổn định", 3)
+    if #stable == 0 then return nil end
 
+    task.wait(1.5)
+
+    local pool = {}
     for _, s in ipairs(stable) do
-        s.score = calculateScore(s)
+        s.score = score(s, s.stability)
+        table.insert(pool, s)
     end
 
-    table.sort(stable, function(a, b)
+    table.sort(pool, function(a, b)
         return a.score > b.score
     end)
 
-    local maxTry = math.min(#stable, 5)
-
-    for i = 1, maxTry do
-        local target = stable[i]
-        if not target then break end
-
-        notify("Verify " .. i .. "/" .. maxTry, 2)
-
-        local allVerified = true
-        for check = 1, CONFIG.VerifyAttempts do
-            if not verifyServerNow(target.id) then
-                allVerified = false
-                break
-            end
-            if check < CONFIG.VerifyAttempts then
-                task.wait(CONFIG.VerifyGap)
-            end
+    local one = {}
+    for _, s in ipairs(pool) do
+        if s.playing == 1 then
+            table.insert(one, s)
         end
-
-        if not allVerified then
-            State.Blacklist[target.id] = tick()
-        else
-            State.CurrentTargetId = target.id
-            State.Blacklist[target.id] = tick()
-
-            notify("Vào " .. target.playing .. "ng FPS" .. target.fps, 3)
-
-            local success = false
-            for attempt = 1, 2 do
-                if attemptTeleport(target.id) then
-                    success = true
-                    break
-                end
-                task.wait(1.5)
-            end
-
-            if success then
-                local startTime = tick()
-                while tick() - startTime < CONFIG.TeleportTimeout do
-                    if game.JobId ~= JOB_ID then
-                        return true, nil
-                    end
-                    task.wait(0.2)
-                end
-                State.Blacklist[target.id] = tick()
-            end
-        end
-
-        task.wait(0.5)
     end
 
-    return false, "all_failed"
+    local pickFrom = #one > 0 and one or pool
+    local n = math.min(3, #pickFrom)
+    return pickFrom[math.random(1, n)]
 end
 
-local function runHopCycle()
-    if State.IsBusy then return end
-    State.IsBusy = true
-    State.BusyStartTime = tick()
-    State.NeedHop = false
+local function doHop()
+    if IsBusy then return end
+    IsBusy = true
+    BusyStart = tick()
+    NeedHop = false
 
-    local success, reason = doOneHop()
+    local now = tick()
+    for id, t in pairs(Blacklist) do
+        if now - t > 240 then
+            Blacklist[id] = nil
+        end
+    end
+
+    local target = findServer()
+
+    if not target then
+        IsBusy = false
+        notify("Không có server · dò lại 4s", 3)
+        task.wait(4)
+        NeedHop = true
+        return
+    end
+
+    notify("Vào " .. target.playing .. "ng · FPS" .. target.fps .. " · P" .. target.ping, 3)
+
+    task.wait(0.3)
+
+    CurrentTarget = target.id
+    Blacklist[target.id] = tick()
+
+    local success = false
+    for i = 1, 2 do
+        if attemptTeleport(target.id) then
+            success = true
+            break
+        end
+        task.wait(1.5)
+    end
 
     if success then
-        task.wait(CONFIG.PostCheckDelay)
-        local count = #Players:GetPlayers()
-        if count > 2 then
-            notify("Server " .. count .. " ng · dò lại", 3)
-            State.NeedHop = true
-        else
-            notify("OK · " .. count .. " người", 3)
+        local t0 = tick()
+        while tick() - t0 < 8 do
+            if game.JobId ~= JOB_ID then
+                IsBusy = false
+                CurrentTarget = nil
+                task.wait(5)
+                local c = #Players:GetPlayers()
+                if c > 2 then
+                    notify("Server " .. c .. " ng · dò lại", 3)
+                    NeedHop = true
+                else
+                    notify("OK · " .. c .. " người", 3)
+                end
+                return
+            end
+            task.wait(0.2)
         end
-    else
-        notify("Fail · dò lại", 3)
-        State.NeedHop = true
     end
 
-    resetBusy()
+    IsBusy = false
+    CurrentTarget = nil
+    notify("Fail · dò lại 4s", 3)
+    task.wait(4)
+    NeedHop = true
 end
 
-local function startMainLoop()
-    task.spawn(function()
-        while true do
-            task.wait(1)
-
-            local ok, err = pcall(function()
-                if not State.AutoEnabled then return end
-
-                if State.IsBusy then
-                    if tick() - State.BusyStartTime > 60 then
-                        resetBusy()
-                        State.NeedHop = true
-                    end
-                    return
+task.spawn(function()
+    while true do
+        task.wait(1)
+        local ok = pcall(function()
+            if IsBusy then
+                if tick() - BusyStart > 60 then
+                    IsBusy = false
+                    NeedHop = true
                 end
-
-                local count = #Players:GetPlayers()
-                if count > 2 then
-                    State.NeedHop = true
-                end
-
-                if State.NeedHop then
-                    runHopCycle()
-                end
-            end)
-
-            if not ok then
-                resetBusy()
-                State.NeedHop = true
+                return
             end
+            local c = #Players:GetPlayers()
+            if c > 2 then
+                NeedHop = true
+            end
+            if NeedHop then
+                doHop()
+            end
+        end)
+        if not ok then
+            IsBusy = false
+            NeedHop = true
         end
-    end)
-end
+    end
+end)
 
-local function startPopupKiller()
-    task.spawn(function()
-        while true do
-            task.wait(CONFIG.PopupCheckInterval)
+task.spawn(function()
+    while true do
+        task.wait(0.2)
+        pcall(function()
+            clickOk()
+            local pg = CoreGui:FindFirstChild("RobloxPromptGui")
+            if pg and pg:FindFirstChild("promptOverlay") then
+                nukePopups()
+                IsBusy = false
+                NeedHop = true
+            end
+        end)
+    end
+end)
 
-            local ok = pcall(function()
-                local promptGui = CoreGui:FindFirstChild("RobloxPromptGui")
-                if not promptGui then return end
-
-                local overlay = promptGui:FindFirstChild("promptOverlay")
-                if not overlay then return end
-
-                local clicked = findAndClickOk()
-
-                task.wait(0.05)
-
-                if promptGui:FindFirstChild("promptOverlay") then
-                    nukeAllPopups()
-                    resetBusy()
-                    State.NeedHop = true
-                    notify("Đã xử lý popup · dò lại", 3)
-                elseif clicked then
-                    resetBusy()
-                    State.NeedHop = true
-                end
-            end)
-        end
-    end)
-end
-
-local function startPlayerMonitor()
-    task.spawn(function()
-        while true do
-            task.wait(0.5)
-
-            local ok = pcall(function()
-                if not State.AutoEnabled then return end
-
-                local count = #Players:GetPlayers()
-                if count == State.LastPlayerCount then return end
-
-                local oldCount = State.LastPlayerCount
-                State.LastPlayerCount = count
-
-                if count > 2 then
-                    if oldCount <= 2 then
-                        notify("Có " .. count .. " người · sẽ hop", 3)
+task.spawn(function()
+    while true do
+        task.wait(0.5)
+        pcall(function()
+            local c = #Players:GetPlayers()
+            if c ~= LastPlayerCount then
+                local old = LastPlayerCount
+                LastPlayerCount = c
+                if c > 2 then
+                    NeedHop = true
+                    if old <= 2 then
+                        notify("Có " .. c .. " người · sẽ hop", 3)
                     end
-                    State.NeedHop = true
                 end
-            end)
-        end
-    end)
-end
-
-State.LastPlayerCount = #Players:GetPlayers()
-
-startPopupKiller()
-startPlayerMonitor()
-startMainLoop()
+            end
+        end)
+    end
+end)
 
 notify("Script sẵn sàng", 4)
 
 task.spawn(function()
     task.wait(2)
     if #Players:GetPlayers() > 2 then
-        State.NeedHop = true
+        NeedHop = true
     end
 end)
