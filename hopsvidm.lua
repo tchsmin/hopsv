@@ -31,6 +31,7 @@ local TotalScans = 0
 local TotalHops = 0
 local FailedHops = 0
 local ConsecutiveFailures = 0
+local AutoEnabled = true
 
 local CONFIG = {
     ScanPages = 12,
@@ -183,8 +184,8 @@ Subtitle.TextXAlignment = Enum.TextXAlignment.Left
 Subtitle.Parent = Header
 
 local Pill = Instance.new("Frame")
-Pill.Size = UDim2.new(0, 64, 0, 22)
-Pill.Position = UDim2.new(1, -76, 0, 10)
+Pill.Size = UDim2.new(0, 74, 0, 22)
+Pill.Position = UDim2.new(1, -86, 0, 10)
 Pill.BackgroundColor3 = Color3.fromRGB(24, 40, 30)
 Pill.BorderSizePixel = 0
 Pill.Parent = Header
@@ -241,7 +242,7 @@ local PillText = Instance.new("TextLabel")
 PillText.Size = UDim2.new(1, -22, 1, 0)
 PillText.Position = UDim2.new(0, 22, 0, 0)
 PillText.BackgroundTransparency = 1
-PillText.Text = "ON"
+PillText.Text = "AUTO: ON"
 PillText.TextColor3 = Color3.fromRGB(140, 255, 180)
 PillText.Font = Enum.Font.GothamBold
 PillText.TextSize = 9
@@ -409,7 +410,7 @@ local StatusText = Instance.new("TextLabel")
 StatusText.Size = UDim2.new(1, -36, 1, 0)
 StatusText.Position = UDim2.new(0, 32, 0, 0)
 StatusText.BackgroundTransparency = 1
-StatusText.Text = "Đang chạy"
+StatusText.Text = "Auto đang chạy"
 StatusText.TextColor3 = Color3.fromRGB(200, 220, 255)
 StatusText.Font = Enum.Font.GothamBold
 StatusText.TextSize = 10
@@ -422,7 +423,7 @@ local function setStatus(text, color)
 end
 
 local function setPill(text, color)
-    PillText.Text = tostring(text or "ON")
+    PillText.Text = tostring(text or "AUTO: ON")
     if color then
         PillText.TextColor3 = color
         PillDot.BackgroundColor3 = color
@@ -585,13 +586,13 @@ local function fillQueue()
     ScanStartTime = os.clock()
     TotalScans = TotalScans + 1
 
-    setPill("SCAN", Color3.fromRGB(255, 200, 120))
+    setPill("AUTO: SCAN", Color3.fromRGB(255, 200, 120))
     setStatus("Đang dò server...", Color3.fromRGB(255, 200, 100))
 
     if not http then
         IsScanning = false
         setStatus("Lỗi HTTP", Color3.fromRGB(255, 100, 100))
-        setPill("OFF", Color3.fromRGB(255, 100, 100))
+        setPill("AUTO: OFF", Color3.fromRGB(255, 100, 100))
         return
     end
 
@@ -605,7 +606,7 @@ local function fillQueue()
         if count1 == 0 then
             IsScanning = false
             setStatus("Không có server 1-2 người", Color3.fromRGB(255, 150, 100))
-            setPill("WAIT", Color3.fromRGB(255, 180, 100))
+            setPill("AUTO: WAIT", Color3.fromRGB(255, 180, 100))
             return
         end
 
@@ -662,7 +663,7 @@ local function fillQueue()
 
         if #pickFrom == 0 then
             setStatus("Không có server!", Color3.fromRGB(255, 120, 120))
-            setPill("FAIL", Color3.fromRGB(255, 120, 120))
+            setPill("AUTO: FAIL", Color3.fromRGB(255, 120, 120))
             return
         end
 
@@ -677,7 +678,7 @@ local function fillQueue()
         updateQueueUI()
 
         setStatus("Queue sẵn sàng · " .. #pickFrom .. " server", Color3.fromRGB(120, 255, 160))
-        setPill("READY", Color3.fromRGB(60, 220, 120))
+        setPill("AUTO: READY", Color3.fromRGB(60, 220, 120))
     end)
 
     IsScanning = false
@@ -686,7 +687,7 @@ local function fillQueue()
         local msg = tostring(err or "unknown")
         if #msg > 32 then msg = msg:sub(1, 32) end
         setStatus("Lỗi · " .. msg, Color3.fromRGB(255, 100, 100))
-        setPill("ERR", Color3.fromRGB(255, 100, 100))
+        setPill("AUTO: ERR", Color3.fromRGB(255, 100, 100))
     end
 end
 
@@ -707,7 +708,7 @@ local function hopWithVerify()
 
     IsHopping = true
 
-    setPill("VERIFY", Color3.fromRGB(255, 200, 120))
+    setPill("AUTO: VERIFY", Color3.fromRGB(255, 200, 120))
     setStatus("Xác minh server...", Color3.fromRGB(255, 200, 100))
 
     local target = Queue
@@ -727,7 +728,7 @@ local function hopWithVerify()
         FailedHops = FailedHops + 1
         ConsecutiveFailures = ConsecutiveFailures + 1
         setStatus("Server bị fill · đổi queue", Color3.fromRGB(255, 150, 100))
-        setPill("RETRY", Color3.fromRGB(255, 150, 100))
+        setPill("AUTO: RETRY", Color3.fromRGB(255, 150, 100))
         return false
     end
 
@@ -735,7 +736,7 @@ local function hopWithVerify()
     promoteQueue()
     updateQueueUI()
 
-    setPill("HOP", Color3.fromRGB(120, 255, 160))
+    setPill("AUTO: HOP", Color3.fromRGB(120, 255, 160))
     setStatus("Vào " .. target.playing .. "ng · FPS" .. target.fps, Color3.fromRGB(120, 255, 160))
 
     addToBlacklist(target.id)
@@ -755,7 +756,7 @@ local function hopWithVerify()
         ConsecutiveFailures = ConsecutiveFailures + 1
         IsHopping = false
         setStatus("Teleport fail", Color3.fromRGB(255, 100, 100))
-        setPill("FAIL", Color3.fromRGB(255, 100, 100))
+        setPill("AUTO: FAIL", Color3.fromRGB(255, 100, 100))
         return false
     end
 end
@@ -807,11 +808,18 @@ local function mainLoop()
     task.wait(1)
 
     while IsRunning and ScreenGui.Parent do
+        if not AutoEnabled then
+            setStatus("Auto đã tắt", Color3.fromRGB(150, 150, 180))
+            setPill("AUTO: OFF", Color3.fromRGB(150, 150, 180))
+            task.wait(1)
+            continue
+        end
+
         local count = updatePlayerCount()
 
         if count == 1 then
-            setStatus("Solo · 1 người", Color3.fromRGB(120, 255, 160))
-            setPill("SOLO", Color3.fromRGB(60, 220, 120))
+            setStatus("Auto · solo 1 người", Color3.fromRGB(120, 255, 160))
+            setPill("AUTO: SOLO", Color3.fromRGB(60, 220, 120))
 
             if not Queue and not IsScanning then
                 task.spawn(fillQueue)
@@ -840,7 +848,7 @@ local function mainLoop()
 
             if someoneJoined then
                 setStatus("Có người vào · chuẩn bị hop", Color3.fromRGB(255, 180, 100))
-                setPill("PREP", Color3.fromRGB(255, 180, 100))
+                setPill("AUTO: PREP", Color3.fromRGB(255, 180, 100))
 
                 if waitForQueue(CONFIG.QueueFillTimeout) then
                     safeHopLoop(CONFIG.MaxHopAttempts)
@@ -850,8 +858,8 @@ local function mainLoop()
         end
 
         if count == 2 then
-            setStatus("Server 2ng · tìm 1ng", Color3.fromRGB(255, 200, 100))
-            setPill("HUNT", Color3.fromRGB(255, 200, 120))
+            setStatus("Auto · 2ng tìm 1ng", Color3.fromRGB(255, 200, 100))
+            setPill("AUTO: HUNT", Color3.fromRGB(255, 200, 120))
 
             if not Queue and not IsScanning then
                 task.spawn(fillQueue)
@@ -868,8 +876,8 @@ local function mainLoop()
             continue
         end
 
-        setStatus("Server " .. count .. "ng · chờ 3s", Color3.fromRGB(255, 180, 100))
-        setPill("WAIT", Color3.fromRGB(255, 180, 100))
+        setStatus("Auto · " .. count .. "ng chờ 3s", Color3.fromRGB(255, 180, 100))
+        setPill("AUTO: WAIT", Color3.fromRGB(255, 180, 100))
 
         for i = 3, 1, -1 do
             if not ScreenGui.Parent then return end
@@ -935,8 +943,8 @@ end)
 
 updatePlayerCount()
 updateQueueUI()
-setStatus("Đang chạy", Color3.fromRGB(120, 255, 160))
-setPill("ON", Color3.fromRGB(60, 220, 120))
+setStatus("Auto đang chạy", Color3.fromRGB(120, 255, 160))
+setPill("AUTO: ON", Color3.fromRGB(60, 220, 120))
 
 task.spawn(mainLoop)
 
