@@ -1,151 +1,55 @@
 local Players = game:GetService("Players")
 local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
-local CoreGui = game:GetService("CoreGui")
-local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
 
 local LocalPlayer = Players.LocalPlayer
 local PLACE_ID = game.PlaceId
 local JOB_ID = game.JobId
 
+local function notify(text, duration)
+    pcall(function()
+        game:GetService("StarterGui"):SetCore("SendNotification", {
+            Title = "HOP SERVER",
+            Text = tostring(text),
+            Duration = duration or 4
+        })
+    end)
+end
+
 local function getHttp()
+    if syn and syn.request then return syn.request end
     if http_request then return http_request end
     if request then return request end
-    if syn and syn.request then return syn.request end
     if fluxus and fluxus.request then return fluxus.request end
+    if krnl and krnl.request then return krnl.request end
+    if http and http.request then return http.request end
     return nil
 end
 local http = getHttp()
 
+if not http then
+    notify("Lỗi: không có HTTP")
+    return
+end
+
 local Blacklist = {}
 local IsScanning = false
-local LoaderActive = false
-local loaderCoroutine = nil
+local IsHopping = false
+local AutoEnabled = true
+local MonitorConn = nil
+local LastPlayerCount = 0
+local TeleportPending = false
+local NeedHop = false
+local CountdownGen = 0
+local PostCheckGen = 0
 
-if CoreGui:FindFirstChild("HopUI") then CoreGui.HopUI:Destroy() end
-
-local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "HopUI"
-ScreenGui.ResetOnSpawn = false
-ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-ScreenGui.IgnoreGuiInset = true
-ScreenGui.DisplayOrder = 999999
-ScreenGui.Parent = CoreGui
-
-local Container = Instance.new("Frame")
-Container.Size = UDim2.new(0, 200, 0, 110)
-Container.Position = UDim2.new(0, 20, 0.5, -55)
-Container.BackgroundTransparency = 1
-Container.Parent = ScreenGui
-
-local Btn = Instance.new("TextButton")
-Btn.Size = UDim2.new(0, 80, 0, 80)
-Btn.Position = UDim2.new(0.5, -40, 0, 0)
-Btn.BackgroundColor3 = Color3.fromRGB(60, 180, 120)
-Btn.Text = "HOP"
-Btn.TextColor3 = Color3.fromRGB(255, 255, 255)
-Btn.Font = Enum.Font.GothamBold
-Btn.TextSize = 18
-Btn.AutoButtonColor = false
-Btn.Active = true
-Btn.Parent = Container
-
-local BtnCorner = Instance.new("UICorner")
-BtnCorner.CornerRadius = UDim.new(1, 0)
-BtnCorner.Parent = Btn
-
-local StatusLabel = Instance.new("TextLabel")
-StatusLabel.Size = UDim2.new(1, 0, 0, 22)
-StatusLabel.Position = UDim2.new(0, 0, 0, 84)
-StatusLabel.BackgroundColor3 = Color3.fromRGB(20, 22, 30)
-StatusLabel.BackgroundTransparency = 0.1
-StatusLabel.BorderSizePixel = 0
-StatusLabel.Text = "Sẵn sàng"
-StatusLabel.TextColor3 = Color3.fromRGB(200, 220, 255)
-StatusLabel.Font = Enum.Font.GothamBold
-StatusLabel.TextSize = 11
-StatusLabel.TextWrapped = false
-StatusLabel.Parent = Container
-
-local StatusCorner = Instance.new("UICorner")
-StatusCorner.CornerRadius = UDim.new(0, 6)
-StatusCorner.Parent = StatusLabel
-
-local SPINNER = {"|", "/", "-", "\\"}
-
-local function startLoading(text)
-    LoaderActive = false
-    task.wait()
-    LoaderActive = true
-    StatusLabel.TextColor3 = Color3.fromRGB(255, 220, 120)
-    loaderCoroutine = task.spawn(function()
-        local i = 1
-        while LoaderActive do
-            StatusLabel.Text = text .. " " .. SPINNER[i]
-            i = i + 1
-            if i > #SPINNER then i = 1 end
-            task.wait(0.15)
-        end
-    end)
-end
-
-local function stopLoading(finalText, color)
-    LoaderActive = false
-    loaderCoroutine = nil
-    if finalText then
-        StatusLabel.Text = finalText
-        StatusLabel.TextColor3 = color or Color3.fromRGB(200, 220, 255)
-    end
-end
-
-local dragActive = false
-local dragStartInput = nil
-local dragStartPos = nil
-local dragMoved = false
-
-Btn.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1
-        or input.UserInputType == Enum.UserInputType.Touch then
-        dragActive = true
-        dragMoved = false
-        dragStartInput = input.Position
-        dragStartPos = Container.Position
-        Btn.BackgroundColor3 = Color3.fromRGB(40, 140, 90)
-    end
-end)
-
-UserInputService.InputChanged:Connect(function(input)
-    if not dragActive then return end
-    if input.UserInputType ~= Enum.UserInputType.MouseMovement
-        and input.UserInputType ~= Enum.UserInputType.Touch then return end
-    local delta = input.Position - dragStartInput
-    if math.abs(delta.X) > 8 or math.abs(delta.Y) > 8 then
-        dragMoved = true
-    end
-    Container.Position = UDim2.new(
-        dragStartPos.X.Scale,
-        dragStartPos.X.Offset + delta.X,
-        dragStartPos.Y.Scale,
-        dragStartPos.Y.Offset + delta.Y
-    )
-end)
-
-UserInputService.InputEnded:Connect(function(input)
-    if not dragActive then return end
-    if input.UserInputType ~= Enum.UserInputType.MouseButton1
-        and input.UserInputType ~= Enum.UserInputType.Touch then return end
-    dragActive = false
-    Btn.BackgroundColor3 = Color3.fromRGB(60, 180, 120)
-    if not dragMoved then
-        task.spawn(function()
-            local ok = pcall(doHop)
-            if not ok then
-                stopLoading("Lỗi!", Color3.fromRGB(255, 100, 100))
-                IsScanning = false
-            end
-        end)
-    end
-end)
+local CONFIG = {
+    MaxTotalAllowed = 2,
+    AutoHopDelay = 3,
+    PostCheckDelay = 4,
+    RetryDelay = 4,
+}
 
 local function requestPage(cursor)
     if not http then return nil end
@@ -156,11 +60,13 @@ local function requestPage(cursor)
     local ok, res = pcall(function()
         return http({ Url = url, Method = "GET", Headers = { ["Accept"] = "application/json" } })
     end)
-    if not ok or not res or not res.Body then return nil end
+    if not ok or not res then return nil end
+    local body = res.Body or res.body
+    if type(body) ~= "string" or #body == 0 then return nil end
     local ok2, data = pcall(function()
-        return HttpService:JSONDecode(res.Body)
+        return HttpService:JSONDecode(body)
     end)
-    if not ok2 or not data then return nil end
+    if not ok2 or type(data) ~= "table" then return nil end
     return data
 end
 
@@ -173,25 +79,28 @@ local function scanPass(maxPlayers, maxPages)
     while pages < maxPages do
         local data = requestPage(cursor)
         if not data or not data.data then break end
+
         local cnt = 0
         for _, s in ipairs(data.data) do
             cnt = cnt + 1
             totalScanned = totalScanned + 1
-            local pc = s.playing or 0
+            local pc = tonumber(s.playing) or 0
             local id = s.id
             if pc >= 1 and pc <= maxPlayers then
                 if id ~= JOB_ID and not Blacklist[id] then
                     result[id] = {
                         id = id,
-                        ping = s.ping or 999,
-                        fps = s.fps or 60,
+                        ping = tonumber(s.ping) or 999,
+                        fps = tonumber(s.fps) or 60,
                         playing = pc,
-                        max = s.maxPlayers or 12
+                        max = tonumber(s.maxPlayers) or 12
                     }
                 end
             end
         end
+
         if cnt == 0 then break end
+
         cursor = data.nextPageCursor
         if not cursor or cursor == "" or cursor == "null" then break end
         pages = pages + 1
@@ -210,29 +119,35 @@ local function calculateScore(server, stabilityBonus)
     elseif server.playing == 3 then
         playerScore = 10
     end
-
     local fpsScore = math.max(0, 60 - server.fps) * 1.5
-
     local pingScore = math.min(server.ping, 500) / 5
-
     local stabilityScore = stabilityBonus * 60
-
-    local total = playerScore + fpsScore + pingScore + stabilityScore
-    return total
+    return playerScore + fpsScore + pingScore + stabilityScore
 end
 
-function doHop()
-    if IsScanning then return end
-    IsScanning = true
+local function attemptTeleport(jobId)
+    local ok1 = pcall(function()
+        local opts = Instance.new("TeleportOptions")
+        opts.ServerInstanceId = jobId
+        TeleportService:TeleportAsync(PLACE_ID, {LocalPlayer}, opts)
+    end)
+    if ok1 then return true end
 
-    startLoading("Đang dò server")
-    task.wait(0.1)
+    local ok2 = pcall(function()
+        TeleportService:TeleportToPlaceInstance(PLACE_ID, jobId, LocalPlayer)
+    end)
+    if ok2 then return true end
 
-    if not http then
-        IsScanning = false
-        stopLoading("Lỗi kết nối!", Color3.fromRGB(255, 100, 100))
-        return
-    end
+    local ok3 = pcall(function()
+        TeleportService:TeleportToPlaceInstance(PLACE_ID, jobId)
+    end)
+    if ok3 then return true end
+
+    return false
+end
+
+local function findServer()
+    notify("Đang tìm server", 3)
 
     local pass1 = select(1, scanPass(2, 12))
 
@@ -240,12 +155,9 @@ function doHop()
     for _ in pairs(pass1) do count1 = count1 + 1 end
 
     if count1 == 0 then
-        IsScanning = false
-        stopLoading("Không có server!", Color3.fromRGB(255, 100, 100))
-        return
+        return nil
     end
 
-    startLoading("Đang phân tích")
     task.wait(2.5)
 
     local pass2 = select(1, scanPass(2, 12))
@@ -268,13 +180,11 @@ function doHop()
         end
     end
 
-    startLoading("Đang xác nhận")
     task.wait(1.5)
 
     local finalPool = {}
     for _, s in ipairs(stable) do
-        local total = calculateScore(s, s.stability)
-        s.score = total
+        s.score = calculateScore(s, s.stability)
         table.insert(finalPool, s)
     end
 
@@ -294,26 +204,155 @@ function doHop()
         pickFrom = finalPool
     end
 
-    local topCount = math.min(3, #pickFrom)
-    if topCount == 0 then
-        IsScanning = false
-        stopLoading("Không có server!", Color3.fromRGB(255, 100, 100))
-        return
+    if #pickFrom == 0 then
+        return nil
     end
 
-    local target = pickFrom[math.random(1, topCount)]
+    local topCount = math.min(3, #pickFrom)
+    return pickFrom[math.random(1, topCount)]
+end
 
-    startLoading("Đang vào server")
-    task.wait(0.5)
+local function postCheck(myGen)
+    task.wait(CONFIG.PostCheckDelay)
+    if myGen ~= PostCheckGen then return end
+    if IsHopping or IsScanning or TeleportPending then return end
 
-    IsScanning = false
-    Blacklist[target.id] = true
-
-    local ok = pcall(function()
-        TeleportService:TeleportToPlaceInstance(PLACE_ID, target.id, LocalPlayer)
-    end)
-
-    if not ok then
-        stopLoading("Lỗi! Bấm lại.", Color3.fromRGB(255, 100, 100))
+    local count = #Players:GetPlayers()
+    if count > CONFIG.MaxTotalAllowed then
+        notify("Lỗi, bắt đầu dò lại", 3)
+        NeedHop = true
+    else
+        notify("OK · server " .. count .. " người", 3)
     end
 end
+
+function performHop()
+    if IsScanning or IsHopping then return false end
+
+    IsScanning = true
+    NeedHop = false
+
+    local target = findServer()
+
+    if not target then
+        IsScanning = false
+        notify("Lỗi, bắt đầu dò lại", 3)
+        task.wait(CONFIG.RetryDelay)
+        return false
+    end
+
+    notify("Vào server " .. target.playing .. " người · FPS" .. target.fps .. " · P" .. target.ping, 3)
+
+    task.wait(0.3)
+
+    IsScanning = false
+    IsHopping = true
+    TeleportPending = true
+    Blacklist[target.id] = tick()
+
+    local success = false
+    for attempt = 1, 2 do
+        if attemptTeleport(target.id) then
+            success = true
+            break
+        end
+        task.wait(1.5)
+    end
+
+    TeleportPending = false
+    IsHopping = false
+
+    if success then
+        PostCheckGen = PostCheckGen + 1
+        local myGen = PostCheckGen
+        task.spawn(function()
+            postCheck(myGen)
+        end)
+        return true
+    else
+        notify("Lỗi, bắt đầu dò lại", 3)
+        task.wait(CONFIG.RetryDelay)
+        return false
+    end
+end
+
+local function triggerCountdown()
+    CountdownGen = CountdownGen + 1
+    local myGen = CountdownGen
+
+    task.spawn(function()
+        for i = CONFIG.AutoHopDelay, 1, -1 do
+            if myGen ~= CountdownGen then return end
+            if not AutoEnabled then return end
+            if IsHopping or IsScanning then return end
+
+            local cnt = #Players:GetPlayers()
+            if cnt <= CONFIG.MaxTotalAllowed then
+                NeedHop = false
+                return
+            end
+
+            task.wait(1)
+        end
+
+        if myGen ~= CountdownGen then return end
+        if IsHopping or IsScanning then return end
+        if #Players:GetPlayers() > CONFIG.MaxTotalAllowed then
+            NeedHop = true
+        end
+    end)
+end
+
+local function startMonitor()
+    if MonitorConn then MonitorConn:Disconnect() end
+    MonitorConn = RunService.Heartbeat:Connect(function()
+        if not AutoEnabled then return end
+        if IsHopping or IsScanning or TeleportPending then return end
+
+        local count = #Players:GetPlayers()
+        if count == LastPlayerCount then return end
+
+        local oldCount = LastPlayerCount
+        LastPlayerCount = count
+
+        if count > CONFIG.MaxTotalAllowed then
+            if oldCount <= CONFIG.MaxTotalAllowed then
+                notify("Phát hiện " .. count .. " người · sẽ hop", 3)
+            end
+            triggerCountdown()
+        else
+            if oldCount > CONFIG.MaxTotalAllowed then
+                CountdownGen = CountdownGen + 1
+                NeedHop = false
+            end
+        end
+    end)
+end
+
+task.spawn(function()
+    while true do
+        task.wait(1)
+        if not AutoEnabled then continue end
+        if IsHopping or IsScanning or TeleportPending then continue end
+
+        if #Players:GetPlayers() > CONFIG.MaxTotalAllowed then
+            NeedHop = true
+        end
+
+        if NeedHop then
+            performHop()
+        end
+    end
+end)
+
+LastPlayerCount = #Players:GetPlayers()
+startMonitor()
+
+notify("Script sẵn sàng", 4)
+
+task.spawn(function()
+    task.wait(2)
+    if #Players:GetPlayers() > CONFIG.MaxTotalAllowed then
+        NeedHop = true
+    end
+end)
