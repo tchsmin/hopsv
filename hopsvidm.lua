@@ -47,8 +47,10 @@ local CONFIG = {
     MaxTotalAllowed = 2,
     MaxPlayerFilter = 2,
     MinPlayerFilter = 1,
-    TeleportTimeout = 12,
+    TeleportTimeout = 10,
     MaxTeleportAttempts = 3,
+    RequestTimeout = 4,
+    RequestRetries = 2,
 }
 
 local Blacklist = {}
@@ -59,6 +61,7 @@ local TargetTotal = nil
 local MonitorConn = nil
 local LastPlayerCount = 0
 local TeleportPending = false
+local ScanGeneration = 0
 
 if CoreGui:FindFirstChild("PhantomUI") then CoreGui.PhantomUI:Destroy() end
 
@@ -270,7 +273,10 @@ local function requestPage(cursor)
         "https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100&cursor=%s",
         PLACE_ID, cursorParam
     )
-    for attempt = 1, 2 do
+    local attempts = 0
+    local maxAttempts = CONFIG.RequestRetries
+    while attempts < maxAttempts do
+        attempts = attempts + 1
         local ok, res = pcall(function()
             return http({ Url = url, Method = "GET", Headers = { ["Accept"] = "application/json" } })
         end)
@@ -285,7 +291,9 @@ local function requestPage(cursor)
                 end
             end
         end
-        task.wait(0.15)
+        if attempts < maxAttempts then
+            task.wait(0.15)
+        end
     end
     return nil
 end
@@ -317,12 +325,13 @@ local function collectFromData(data, targetPlaying, result, lockRef)
     return added
 end
 
-local function parallelScan(targetPlaying)
+local function parallelScan(targetPlaying, myGeneration)
     local result = {}
     local lockRef = {false}
 
     local first = requestPage("")
     if not first then return result end
+    if myGeneration ~= ScanGeneration then return result end
     collectFromData(first, targetPlaying, result, lockRef)
 
     local rootCursor = first.nextPageCursor
@@ -332,13 +341,15 @@ local function parallelScan(targetPlaying)
 
     local branchCursors = { rootCursor }
     for i = 1, CONFIG.ParallelBranches - 1 do
+        if myGeneration ~= ScanGeneration then return result end
         local cur = branchCursors[i]
         if cur then
             local data = requestPage(cur)
             if data then
                 collectFromData(data, targetPlaying, result, lockRef)
-                if data.nextPageCursor and data.nextPageCursor ~= "" and data.nextPageCursor ~= "null" then
-                    branchCursors[i + 1] = data.nextPageCursor
+                local nc = data.nextPageCursor
+                if nc and nc ~= "" and nc ~= "null" and type(nc) == "string" then
+                    branchCursors[i + 1] = nc
                 else
                     break
                 end
@@ -353,9 +364,7 @@ local function parallelScan(targetPlaying)
         end
     end
 
-    if #activeBranches == 0 then
-        return result
-    end
+    if #activeBranches == 0 then return result end
 
     local pagesPerBranch = math.max(2, math.floor(CONFIG.MaxPages / #activeBranches))
     local threads = {}
@@ -367,6 +376,7 @@ local function parallelScan(targetPlaying)
             local pages = 0
             local failCount = 0
             while pages < pagesPerBranch do
+                if myGeneration ~= ScanGeneration then return end
                 local data = requestPage(cursor)
                 if not data then
                     failCount = failCount + 1
@@ -441,7 +451,7 @@ local function verifyServerExists(jobId)
             for _, s in ipairs(data.data) do
                 if type(s) == "table" and s.id == jobId then
                     local pc = tonumber(s.playing) or 0
-                    if pc >= 1 and pc <= CONFIG.MaxPlayerFilter then
+                    if pc >= CONFIG.MinPlayerFilter and pc <= CONFIG.MaxPlayerFilter then
                         return true
                     end
                     return false
@@ -499,20 +509,23 @@ local function teleportWithVerify(target)
     return false, "stuck"
 end
 
-local function scanForOnePlayer()
-    local pass1 = parallelScan(1)
+local function scanForOnePlayer(myGeneration)
+    local pass1 = parallelScan(1, myGeneration)
+    if myGeneration ~= ScanGeneration then return nil, nil end
     local count1 = 0
     for _ in pairs(pass1) do count1 = count1 + 1 end
 
     if count1 == 0 then
         task.wait(0.3)
-        local pass1b = parallelScan(2)
+        local pass1b = parallelScan(2, myGeneration)
+        if myGeneration ~= ScanGeneration then return nil, nil end
         local count1b = 0
         for _ in pairs(pass1b) do count1b = count1b + 1 end
         if count1b == 0 then return nil, nil end
 
         task.wait(CONFIG.PassDelay)
-        local pass2b = parallelScan(2)
+        local pass2b = parallelScan(2, myGeneration)
+        if myGeneration ~= ScanGeneration then return nil, nil end
 
         local stableB = {}
         for id, s in pairs(pass2b) do
@@ -533,6 +546,8 @@ local function scanForOnePlayer()
         end
 
         task.wait(CONFIG.ConfirmDelay)
+        if myGeneration ~= ScanGeneration then return nil, nil end
+
         local finalPoolB = {}
         for _, s in ipairs(stableB) do
             s.score = calculateScore(s, s.stability)
@@ -552,8 +567,10 @@ local function scanForOnePlayer()
     end
 
     task.wait(CONFIG.PassDelay)
+    if myGeneration ~= ScanGeneration then return nil, nil end
 
-    local pass2 = parallelScan(1)
+    local pass2 = parallelScan(1, myGeneration)
+    if myGeneration ~= ScanGeneration then return nil, nil end
 
     local stable = {}
     for id, s in pairs(pass2) do
@@ -574,6 +591,7 @@ local function scanForOnePlayer()
     end
 
     task.wait(CONFIG.ConfirmDelay)
+    if myGeneration ~= ScanGeneration then return nil, nil end
 
     local finalPool = {}
     for _, s in ipairs(stable) do
@@ -596,6 +614,8 @@ end
 local function performHop()
     if IsScanning or IsHopping then return end
     IsScanning = true
+    ScanGeneration = ScanGeneration + 1
+    local myGeneration = ScanGeneration
 
     setStatus("Đang quét server...", Color3.fromRGB(255, 200, 100), "...")
 
@@ -605,7 +625,12 @@ local function performHop()
         return
     end
 
-    local target, targetMode = scanForOnePlayer()
+    local target, targetMode = scanForOnePlayer(myGeneration)
+
+    if myGeneration ~= ScanGeneration then
+        IsScanning = false
+        return
+    end
 
     if not target then
         IsScanning = false
@@ -620,6 +645,11 @@ local function performHop()
 
     task.wait(CONFIG.PreTeleportDelay)
 
+    if myGeneration ~= ScanGeneration then
+        IsScanning = false
+        return
+    end
+
     IsScanning = false
     IsHopping = true
     TargetTotal = target.playing + 1
@@ -627,6 +657,11 @@ local function performHop()
 
     local success = false
     for attempt = 1, CONFIG.MaxTeleportAttempts do
+        if myGeneration ~= ScanGeneration then
+            IsHopping = false
+            return
+        end
+
         local ok = teleportWithVerify(target)
         if ok then
             success = true
@@ -658,18 +693,24 @@ local function startMonitor()
         if count > CONFIG.MaxTotalAllowed then
             setStatus("Server " .. count .. " người · chờ " .. CONFIG.AutoHopDelay .. "s", Color3.fromRGB(255, 200, 120), "...")
 
+            local myTriggerCount = count
             task.spawn(function()
                 for i = CONFIG.AutoHopDelay, 1, -1 do
                     if not AutoEnabled then return end
+                    if IsHopping or IsScanning then return end
                     local cnt = #Players:GetPlayers()
                     if cnt <= CONFIG.MaxTotalAllowed then
                         setStatus("Đã về " .. cnt .. " người", Color3.fromRGB(120, 255, 160), "ON")
                         return
                     end
+                    if cnt ~= myTriggerCount and cnt > CONFIG.MaxTotalAllowed then
+                        myTriggerCount = cnt
+                    end
                     setStatus("Hop sau " .. i .. "s · " .. cnt .. " người", Color3.fromRGB(255, 180, 100), "...")
                     task.wait(1)
                 end
 
+                if IsHopping or IsScanning then return end
                 if #Players:GetPlayers() > CONFIG.MaxTotalAllowed then
                     performHop()
                 end
