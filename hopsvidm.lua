@@ -1,4 +1,4 @@
-local VERSION = "PHANTOM v13.3.3"
+local VERSION = "PHANTOM v13.3.4"
 local SCRIPT_NAME = "PHANTOM ⚡"
 
 if not game:IsLoaded() then game.Loaded:Wait() end
@@ -61,12 +61,13 @@ end
 
 local RequestPool = {
     active = 0,
-    maxActive = 5,
+    maxActive = 8,
     lastRequest = 0,
-    minInterval = 0.03,
-    maxInterval = 0.3,
+    minInterval = 0.02,
+    maxInterval = 0.4,
     totalReqs = 0,
     hits429 = 0,
+    successStreak = 0,
 }
 
 local function httpGet(url)
@@ -81,9 +82,10 @@ end
 local function throttledGet(url)
     local startWait = tick()
     while RequestPool.active >= RequestPool.maxActive do
-        task.wait(0.02)
-        if tick() - startWait > 20 then return nil end
+        task.wait(0.01)
+        if tick() - startWait > 15 then return nil end
     end
+
     local now = tick()
     local delta = now - RequestPool.lastRequest
     if delta < RequestPool.minInterval then
@@ -99,18 +101,20 @@ local function throttledGet(url)
     if res then
         if res.Status == 429 then
             RequestPool.hits429 = RequestPool.hits429 + 1
-            local newInterval = RequestPool.minInterval * 1.4
-            if newInterval > RequestPool.maxInterval then newInterval = RequestPool.maxInterval end
-            RequestPool.minInterval = newInterval
+            RequestPool.successStreak = 0
+            local ni = RequestPool.minInterval * 1.5
+            if ni > RequestPool.maxInterval then ni = RequestPool.maxInterval end
+            RequestPool.minInterval = ni
         elseif res.Status == 200 then
-            if RequestPool.minInterval > 0.03 then
-                local newInterval = RequestPool.minInterval * 0.97
-                if newInterval < 0.03 then newInterval = 0.03 end
-                RequestPool.minInterval = newInterval
+            RequestPool.successStreak = RequestPool.successStreak + 1
+            if RequestPool.successStreak >= 20 and RequestPool.minInterval > 0.02 then
+                local ni = RequestPool.minInterval * 0.95
+                if ni < 0.02 then ni = 0.02 end
+                RequestPool.minInterval = ni
+                RequestPool.successStreak = 0
             end
         end
     end
-
     return res
 end
 
@@ -128,22 +132,23 @@ local State = {
     Delay = 3,
     ScanSpeed = 0,
     TotalScans = 0,
+    CurrentPage = 0,
 }
 
 local Queue = {}
 local Blacklist = {}
 local Logs = {}
 local scanPending = false
-local MAX_PAGES = 25
-local MAX_QUEUE = 30
-local SCAN_TIMEOUT = 40
+local MAX_PAGES = 40
+local MAX_QUEUE = 40
+local SCAN_TIMEOUT = 60
 local HOP_TIMEOUT = 10
-local BLACKLIST_MAX = 150
-local PASS_DELAY = 0.3
+local BLACKLIST_MAX = 200
+local PASS_DELAY = 0.2
 local TOTAL_PASSES = 3
-local MIN_STABILITY = 1
-local MAX_HOP_ATTEMPTS = 3
-local UI_UPDATE_INTERVAL = 1
+local MIN_STABILITY = 2
+local MAX_HOP_ATTEMPTS = 5
+local BRANCHES_PER_PASS = 5
 
 local function log(level, msg)
     local entry = string.format("[%s][%s] %s", os.date("%H:%M:%S"), level, msg)
@@ -151,7 +156,7 @@ local function log(level, msg)
     if #Logs > 50 then table.remove(Logs, 1) end
     if level == "error" or level == "warn" then
         print(entry)
-    elseif level == "info" and msg:find("^Scan") or msg:find("^TOP") or msg:find("Countdown") or msg:find("^Hop") then
+    elseif msg:find("^Scan") or msg:find("^TOP") or msg:find("Countdown") or msg:find("^Hop") or msg:find("^Pass") then
         print(entry)
     end
 end
@@ -204,7 +209,7 @@ local function scanBranch(branchId, sortOrder, result)
         local data = fetchServers(cursor, sortOrder)
         if not data then
             State.ConsecutiveFails = State.ConsecutiveFails + 1
-            if State.ConsecutiveFails >= 6 then
+            if State.ConsecutiveFails >= 10 then
                 Blacklist = {}
                 State.ConsecutiveFails = 0
             end
@@ -231,6 +236,7 @@ local function scanBranch(branchId, sortOrder, result)
         end
 
         pageCount = pageCount + 1
+        State.CurrentPage = State.CurrentPage + 1
         cursor = data.nextPageCursor
         if not cursor or cursor == "" or cursor == "null" then break end
         if cursor == lastCursor then
@@ -246,14 +252,12 @@ end
 local function scanOnePass(passTag)
     local result = {}
     local threads = {}
-    local branches = {
-        {id = passTag .. "A", sortOrder = "Asc"},
-        {id = passTag .. "D", sortOrder = "Desc"},
-        {id = passTag .. "B", sortOrder = "Asc"},
-    }
-    for _, br in ipairs(branches) do
+    local orders = {"Asc", "Desc", "Asc", "Desc", "Asc"}
+    for i = 1, BRANCHES_PER_PASS do
+        local sortOrder = orders[i] or "Asc"
+        local branchId = passTag .. "_B" .. i
         local t = task.spawn(function()
-            pcall(scanBranch, br.id, br.sortOrder, result)
+            pcall(scanBranch, branchId, sortOrder, result)
         end)
         table.insert(threads, t)
     end
@@ -281,7 +285,7 @@ local function calculateScore(server, stability)
     elseif server.ping >= 200 then pingScore = 3500
     elseif server.ping >= 100 then pingScore = 1500 end
 
-    local stabilityScore = stability * 5000
+    local stabilityScore = stability * 8000
 
     local slotScore = 0
     local fillRate = server.playing / math.max(server.max, 1)
@@ -295,10 +299,7 @@ local function calculateScore(server, stability)
 end
 
 local function scanServers()
-    if scanPending then
-        log("info", "Scan pending, bỏ qua")
-        return
-    end
+    if scanPending then return end
     scanPending = true
     if State.IsScanning then
         local t = tick()
@@ -312,7 +313,8 @@ local function scanServers()
     State.FoundCount = 0
     Queue = {}
     State.TotalScans = State.TotalScans + 1
-    log("info", "Scan lần " .. State.TotalScans)
+    State.CurrentPage = 0
+    log("info", "Scan #" .. State.TotalScans .. " - " .. TOTAL_PASSES .. " pass × " .. BRANCHES_PER_PASS .. " nhánh")
 
     local startTime = tick()
     local startSeen = State.SeenCount
@@ -321,6 +323,9 @@ local function scanServers()
     for i = 1, TOTAL_PASSES do
         State.Status = "Pass " .. i .. "/" .. TOTAL_PASSES
         passes[i] = scanOnePass("P" .. i)
+        local cnt = 0
+        for _ in pairs(passes[i]) do cnt = cnt + 1 end
+        log("info", "Pass " .. i .. ": " .. cnt .. " server 1 người")
         if i < TOTAL_PASSES then
             task.wait(PASS_DELAY)
             if not State.IsScanning then scanPending = false return end
@@ -344,14 +349,18 @@ local function scanServers()
     end
 
     local merged = {}
+    local totalFound = 0
+    local passCountFilter = 0
     for _, info in pairs(seenIds) do
-        local s = info.ref
-        s.ping = info.maxPing
-        s.fps = info.minFps
-        s.stability = info.count
-        s.score = calculateScore(s, info.count)
+        totalFound = totalFound + 1
         if info.count >= MIN_STABILITY then
+            local s = info.ref
+            s.ping = info.maxPing
+            s.fps = info.minFps
+            s.stability = info.count
+            s.score = calculateScore(s, info.count)
             table.insert(merged, s)
+            passCountFilter = passCountFilter + 1
         end
     end
 
@@ -377,13 +386,13 @@ local function scanServers()
         end
         log("info", "TOP3:" .. msg)
     end
-    log("info", "Scan " .. #Queue .. " sv, " .. State.ScanSpeed .. " sv/s, pool " .. RequestPool.totalReqs .. " req, 429=" .. RequestPool.hits429)
+    log("info", "Scan " .. #Queue .. " queue (raw " .. totalFound .. ", filter " .. passCountFilter .. "), " .. State.ScanSpeed .. " sv/s, 429=" .. RequestPool.hits429)
 end
 
 local function verifyServerOnePlayer(jobId)
     local cursor = nil
     local pages = 0
-    while pages < 20 do
+    while pages < 15 do
         local data = fetchServers(cursor, "Asc")
         if not data then return nil end
         for _, srv in ipairs(data.data or {}) do
@@ -443,7 +452,7 @@ local function hopToServer(server)
     if not ok then
         State.FailCount = State.FailCount + 1
         State.ConsecutiveFails = State.ConsecutiveFails + 1
-        if State.ConsecutiveFails >= 6 then
+        if State.ConsecutiveFails >= 10 then
             Blacklist = {}
             State.ConsecutiveFails = 0
         end
@@ -479,7 +488,7 @@ local function tryHop(forceManual)
 
     if State.IsScanning then
         local t = tick()
-        while State.IsScanning and tick() - t < 15 do task.wait(0.1) end
+        while State.IsScanning and tick() - t < 20 do task.wait(0.1) end
         if State.IsScanning then State.IsScanning = false end
     end
 
@@ -492,7 +501,10 @@ local function tryHop(forceManual)
         if not candidate then
             scanServers()
             candidate = pickTopCandidate()
-            if not candidate then return end
+            if not candidate then
+                log("warn", "Không có candidate sau scan")
+                return
+            end
         end
 
         for i = #Queue, 1, -1 do
@@ -708,9 +720,7 @@ UI.AutoButton.MouseButton1Click:Connect(function()
 end)
 
 UI.HopButton.MouseButton1Click:Connect(function()
-    task.spawn(function()
-        tryHop(true)
-    end)
+    task.spawn(function() tryHop(true) end)
 end)
 
 UI.CopyButton.MouseButton1Click:Connect(function()
@@ -722,6 +732,7 @@ UI.CopyButton.MouseButton1Click:Connect(function()
         "Seen: " .. tostring(State.SeenCount),
         "Fails: " .. tostring(State.FailCount),
         "Tốc độ: " .. State.ScanSpeed .. " sv/s",
+        "Pages: " .. State.CurrentPage,
         "429 hits: " .. RequestPool.hits429,
         "Interval: " .. string.format("%.3f", RequestPool.minInterval),
         "Status: " .. State.Status,
@@ -734,7 +745,7 @@ end)
 
 task.spawn(function()
     while true do
-        task.wait(UI_UPDATE_INTERVAL)
+        task.wait(1)
         updateUI()
     end
 end)
@@ -751,7 +762,7 @@ local function monitorLoop()
                 countdownActive = true
                 countdownRemaining = State.Delay
                 State.Status = "Đếm ngược " .. countdownRemaining .. "s"
-                log("info", "Countdown bắt đầu, " .. pc .. " người")
+                log("info", "Countdown " .. pc .. " người")
             end
             if countdownActive then
                 if pc <= 2 then
@@ -794,8 +805,8 @@ end
 
 local function refillLoop()
     while true do
-        task.wait(8)
-        if State.Auto and #Queue == 0 and not State.IsScanning and not State.IsHopping and not scanPending then
+        task.wait(6)
+        if State.Auto and #Queue < 5 and not State.IsScanning and not State.IsHopping and not scanPending then
             if getPlayerCount() < 3 then
                 task.spawn(scanServers)
             end
