@@ -4,6 +4,7 @@ local HttpService = game:GetService("HttpService")
 local CoreGui = game:GetService("CoreGui")
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
 
 local LocalPlayer = Players.LocalPlayer
 local PLACE_ID = game.PlaceId
@@ -21,37 +22,44 @@ end
 local http = getHttp()
 
 local State = {
+    Queue = {},
     Blacklist = {},
-    Queue = nil,
     IsScanning = false,
     ScanStartTime = 0,
     IsHopping = false,
+    HopStartTime = 0,
     IsRunning = true,
     TotalScans = 0,
     TotalHops = 0,
     FailedHops = 0,
+    SuccessfulHops = 0,
     CurrentTarget = nil,
     ConsecutiveFailures = 0,
-    MaxConsecutiveFailures = 5,
+    MaxConsecutiveFailures = 6,
+    LastPlayerCount = 0,
 }
 
 local CONFIG = {
     ScanPages = 30,
     ParallelBranches = 6,
     ScanPageDelay = 0,
-    BranchDelay = 0,
-    VerifyMaxPages = 40,
+    VerifyMaxPages = 30,
     VerifyParallel = 4,
-    QueueSize = 3,
+    VerifyRetries = 2,
+    QueueTargetSize = 5,
+    QueueMinSize = 2,
+    QueueMaxSize = 10,
     HopPreDelay = 0.2,
     PostHopWait = 3,
+    HopTimeout = 15,
+    ScanTimeout = 40,
     CountdownStart = 3,
     SoloMonitorTimeout = 120,
-    ScanTimeout = 40,
     QueueFillTimeout = 20,
-    HopAttemptsMax = 8,
-    BlacklistResetThreshold = 80,
+    HopAttemptsMax = 10,
+    BlacklistResetThreshold = 100,
     TargetPlaying = 1,
+    AcceptFallbackPlaying = 2,
 }
 
 local function safeNum(v, default)
@@ -67,12 +75,20 @@ local function safeStr(v, default)
     return tostring(v)
 end
 
+local function getQueueSize()
+    return #State.Queue
+end
+
+local function getBlacklistCount()
+    local c = 0
+    for _ in pairs(State.Blacklist) do c = c + 1 end
+    return c
+end
+
 local function addToBlacklist(id)
     if type(id) ~= "string" then return end
     State.Blacklist[id] = true
-    local count = 0
-    for _ in pairs(State.Blacklist) do count = count + 1 end
-    if count > CONFIG.BlacklistResetThreshold then
+    if getBlacklistCount() > CONFIG.BlacklistResetThreshold then
         State.Blacklist = {}
     end
 end
@@ -80,6 +96,13 @@ end
 local function isBlacklisted(id)
     if type(id) ~= "string" then return true end
     return State.Blacklist[id] == true
+end
+
+local function isInQueue(id)
+    for _, item in ipairs(State.Queue) do
+        if item.id == id then return true end
+    end
+    return false
 end
 
 if CoreGui:FindFirstChild("PhantomUI") then CoreGui.PhantomUI:Destroy() end
@@ -93,8 +116,8 @@ ScreenGui.DisplayOrder = 999999
 ScreenGui.Parent = CoreGui
 
 local Main = Instance.new("Frame")
-Main.Size = UDim2.new(0, 240, 0, 195)
-Main.Position = UDim2.new(0, 20, 0.5, -97)
+Main.Size = UDim2.new(0, 250, 0, 200)
+Main.Position = UDim2.new(0, 20, 0.5, -100)
 Main.BackgroundColor3 = Color3.fromRGB(13, 15, 22)
 Main.BorderSizePixel = 0
 Main.Active = true
@@ -198,7 +221,7 @@ local Subtitle = Instance.new("TextLabel")
 Subtitle.Size = UDim2.new(1, -140, 0, 11)
 Subtitle.Position = UDim2.new(0, 50, 0, 24)
 Subtitle.BackgroundTransparency = 1
-Subtitle.Text = "turbo scan"
+Subtitle.Text = "turbo · queue · verify"
 Subtitle.TextColor3 = Color3.fromRGB(130, 140, 180)
 Subtitle.Font = Enum.Font.Gotham
 Subtitle.TextSize = 9
@@ -250,9 +273,8 @@ task.spawn(function()
         PillPulse.Position = UDim2.new(0, 0, 0, 0)
         PillPulse.BackgroundTransparency = 0.6
         task.wait(1)
-        local tw = game:GetService("TweenService")
         local info = TweenInfo.new(0.8, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
-        tw:Create(PillPulse, info, {
+        TweenService:Create(PillPulse, info, {
             Size = UDim2.new(3, 0, 3, 0),
             Position = UDim2.new(-1, 0, -1, 0),
             BackgroundTransparency = 1
@@ -297,16 +319,17 @@ local function makeCard(y, h)
     return card
 end
 
-local PlayersCard = makeCard(54, 36)
-local FoundCard = makeCard(94, 30)
-local QueueCard = makeCard(128, 30)
+local PlayersCard = makeCard(54, 32)
+local FoundCard = makeCard(90, 28)
+local QueueCard = makeCard(122, 28)
+local HopCard = makeCard(154, 28)
 
 local PlayersIcon = Instance.new("TextLabel")
 PlayersIcon.Size = UDim2.new(0, 28, 1, 0)
 PlayersIcon.Position = UDim2.new(0, 8, 0, 0)
 PlayersIcon.BackgroundTransparency = 1
 PlayersIcon.Text = "👥"
-PlayersIcon.TextSize = 14
+PlayersIcon.TextSize = 13
 PlayersIcon.Parent = PlayersCard
 
 local PlayersLabel = Instance.new("TextLabel")
@@ -316,7 +339,7 @@ PlayersLabel.BackgroundTransparency = 1
 PlayersLabel.Text = "Số người"
 PlayersLabel.TextColor3 = Color3.fromRGB(150, 160, 190)
 PlayersLabel.Font = Enum.Font.Gotham
-PlayersLabel.TextSize = 11
+PlayersLabel.TextSize = 10
 PlayersLabel.TextXAlignment = Enum.TextXAlignment.Left
 PlayersLabel.Parent = PlayersCard
 
@@ -327,7 +350,7 @@ PlayersValue.BackgroundTransparency = 1
 PlayersValue.Text = "1"
 PlayersValue.TextColor3 = Color3.fromRGB(120, 255, 160)
 PlayersValue.Font = Enum.Font.GothamBold
-PlayersValue.TextSize = 16
+PlayersValue.TextSize = 15
 PlayersValue.TextXAlignment = Enum.TextXAlignment.Right
 PlayersValue.Parent = PlayersCard
 
@@ -343,7 +366,7 @@ local FoundLabel = Instance.new("TextLabel")
 FoundLabel.Size = UDim2.new(1, -110, 1, 0)
 FoundLabel.Position = UDim2.new(0, 38, 0, 0)
 FoundLabel.BackgroundTransparency = 1
-FoundLabel.Text = "Server 1 người"
+FoundLabel.Text = "Found"
 FoundLabel.TextColor3 = Color3.fromRGB(150, 160, 190)
 FoundLabel.Font = Enum.Font.Gotham
 FoundLabel.TextSize = 10
@@ -357,7 +380,7 @@ FoundValue.BackgroundTransparency = 1
 FoundValue.Text = "0"
 FoundValue.TextColor3 = Color3.fromRGB(255, 200, 120)
 FoundValue.Font = Enum.Font.GothamBold
-FoundValue.TextSize = 14
+FoundValue.TextSize = 13
 FoundValue.TextXAlignment = Enum.TextXAlignment.Right
 FoundValue.Parent = FoundCard
 
@@ -381,19 +404,49 @@ QueueLabel.TextXAlignment = Enum.TextXAlignment.Left
 QueueLabel.Parent = QueueCard
 
 local QueueValue = Instance.new("TextLabel")
-QueueValue.Size = UDim2.new(0, 90, 1, 0)
-QueueValue.Position = UDim2.new(1, -98, 0, 0)
+QueueValue.Size = UDim2.new(0, 110, 1, 0)
+QueueValue.Position = UDim2.new(1, -118, 0, 0)
 QueueValue.BackgroundTransparency = 1
-QueueValue.Text = "--"
+QueueValue.Text = "0/5"
 QueueValue.TextColor3 = Color3.fromRGB(140, 150, 180)
 QueueValue.Font = Enum.Font.Code
 QueueValue.TextSize = 10
 QueueValue.TextXAlignment = Enum.TextXAlignment.Right
 QueueValue.Parent = QueueCard
 
+local HopIcon = Instance.new("TextLabel")
+HopIcon.Size = UDim2.new(0, 28, 1, 0)
+HopIcon.Position = UDim2.new(0, 8, 0, 0)
+HopIcon.BackgroundTransparency = 1
+HopIcon.Text = "🚀"
+HopIcon.TextSize = 12
+HopIcon.Parent = HopCard
+
+local HopLabel = Instance.new("TextLabel")
+HopLabel.Size = UDim2.new(1, -110, 1, 0)
+HopLabel.Position = UDim2.new(0, 38, 0, 0)
+HopLabel.BackgroundTransparency = 1
+HopLabel.Text = "Hops"
+HopLabel.TextColor3 = Color3.fromRGB(150, 160, 190)
+HopLabel.Font = Enum.Font.Gotham
+HopLabel.TextSize = 10
+HopLabel.TextXAlignment = Enum.TextXAlignment.Left
+HopLabel.Parent = HopCard
+
+local HopValue = Instance.new("TextLabel")
+HopValue.Size = UDim2.new(0, 110, 1, 0)
+HopValue.Position = UDim2.new(1, -118, 0, 0)
+HopValue.BackgroundTransparency = 1
+HopValue.Text = "0/0"
+HopValue.TextColor3 = Color3.fromRGB(120, 200, 255)
+HopValue.Font = Enum.Font.Code
+HopValue.TextSize = 10
+HopValue.TextXAlignment = Enum.TextXAlignment.Right
+HopValue.Parent = HopCard
+
 local StatusFrame = Instance.new("Frame")
-StatusFrame.Size = UDim2.new(1, -24, 0, 30)
-StatusFrame.Position = UDim2.new(0, 12, 0, 162)
+StatusFrame.Size = UDim2.new(1, -24, 0, 32)
+StatusFrame.Position = UDim2.new(0, 12, 0, 158)
 StatusFrame.BackgroundColor3 = Color3.fromRGB(25, 20, 40)
 StatusFrame.BorderSizePixel = 0
 StatusFrame.Parent = Main
@@ -455,14 +508,17 @@ local function setPill(text, color)
     end
 end
 
-local function updateQueueUI()
-    if State.Queue then
-        QueueValue.Text = string.format("1ng·%d·%d", State.Queue.fps, State.Queue.ping)
+local function updateUI()
+    local qCount = getQueueSize()
+    if qCount > 0 then
+        local first = State.Queue[1]
+        QueueValue.Text = string.format("%d/%d · %d·%d", qCount, CONFIG.QueueTargetSize, first.fps, first.ping)
         QueueValue.TextColor3 = Color3.fromRGB(120, 255, 160)
     else
-        QueueValue.Text = "--"
+        QueueValue.Text = "0/" .. CONFIG.QueueTargetSize
         QueueValue.TextColor3 = Color3.fromRGB(140, 150, 180)
     end
+    HopValue.Text = State.SuccessfulHops .. "/" .. (State.SuccessfulHops + State.FailedHops)
 end
 
 local function updatePlayerCount()
@@ -513,7 +569,7 @@ local function collectFromData(data, targetPlaying, result, lockRef)
             local pc = safeNum(s.playing, 0)
             local id = s.id
             if type(id) == "string" and id ~= JOB_ID then
-                if not isBlacklisted(id) and pc == targetPlaying then
+                if not isBlacklisted(id) and not isInQueue(id) and pc == targetPlaying then
                     while lockRef[1] do task.wait() end
                     lockRef[1] = true
                     result[id] = {
@@ -585,7 +641,7 @@ local function parallelScan(targetPlaying)
     end
 
     local waited = 0
-    while waited < 50 do
+    while waited < 100 do
         local allDone = true
         for _, t in ipairs(threads) do
             if coroutine.status(t) ~= "dead" then
@@ -608,6 +664,28 @@ local function calculateScore(s)
     return 1000 + fpsScore + pingScore + stabilityScore
 end
 
+local function verifyServer(jobId)
+    if type(jobId) ~= "string" then return nil end
+    local cursor = ""
+    local pages = 0
+    while pages < CONFIG.VerifyMaxPages do
+        local data = requestPage(cursor, "Asc")
+        if not data or type(data.data) ~= "table" then return nil end
+        for _, s in ipairs(data.data) do
+            if type(s) == "table" and s.id == jobId then
+                local pc = safeNum(s.playing, 0)
+                if pc == 1 then return true end
+                if pc >= 2 then return false end
+            end
+        end
+        cursor = data.nextPageCursor
+        if type(cursor) ~= "string" or cursor == "" or cursor == "null" then return nil end
+        pages = pages + 1
+        task.wait(0.01)
+    end
+    return nil
+end
+
 local function fastTeleport(jobId)
     if type(jobId) ~= "string" then return false end
     local success = false
@@ -625,14 +703,31 @@ local function fastTeleport(jobId)
     return success
 end
 
-local function getBlacklistCount()
-    local c = 0
-    for _ in pairs(State.Blacklist) do c = c + 1 end
-    return c
+local function pushToQueue(server)
+    if not server then return end
+    for _, item in ipairs(State.Queue) do
+        if item.id == server.id then return end
+    end
+    table.insert(State.Queue, server)
+    table.sort(State.Queue, function(a, b)
+        return a.score > b.score
+    end)
+    while #State.Queue > CONFIG.QueueMaxSize do
+        table.remove(State.Queue)
+    end
+end
+
+local function popFromQueue()
+    if #State.Queue == 0 then return nil end
+    return table.remove(State.Queue, 1)
+end
+
+local function clearQueue()
+    State.Queue = {}
 end
 
 local function fillQueue()
-    if State.Queue then return end
+    if getQueueSize() >= CONFIG.QueueTargetSize then return end
     if State.IsScanning then
         if (os.clock() - State.ScanStartTime) > CONFIG.ScanTimeout then
             State.IsScanning = false
@@ -656,6 +751,7 @@ local function fillQueue()
     end
 
     local ok, err = pcall(function()
+        local needed = CONFIG.QueueTargetSize - getQueueSize()
         local aggregated, seen = parallelScan(CONFIG.TargetPlaying)
 
         local list = {}
@@ -663,7 +759,7 @@ local function fillQueue()
             table.insert(list, s)
         end
 
-        FoundValue.Text = tostring(#list)
+        FoundValue.Text = tostring(#list + getQueueSize())
 
         if #list == 0 then
             State.IsScanning = false
@@ -680,10 +776,16 @@ local function fillQueue()
             return a.score > b.score
         end)
 
-        State.Queue = list[1]
-        updateQueueUI()
+        local added = 0
+        for _, s in ipairs(list) do
+            if added >= needed then break end
+            pushToQueue(s)
+            added = added + 1
+        end
 
-        setStatus("Queue ready · " .. #list .. " found", Color3.fromRGB(120, 255, 160))
+        updateUI()
+        setStatus("Queue " .. getQueueSize() .. "/" .. CONFIG.QueueTargetSize .. " · " .. seen .. " seen",
+            Color3.fromRGB(120, 255, 160))
         setPill("READY", Color3.fromRGB(60, 220, 120))
     end)
 
@@ -697,126 +799,109 @@ local function fillQueue()
     end
 end
 
-local function verifyServerParallel(jobId)
-    if type(jobId) ~= "string" then return nil end
-    local cursor = ""
-    local pages = 0
-    while pages < CONFIG.VerifyMaxPages do
-        local data = requestPage(cursor, "Asc")
-        if not data or type(data.data) ~= "table" then return nil end
-        for _, s in ipairs(data.data) do
-            if type(s) == "table" and s.id == jobId then
-                local pc = safeNum(s.playing, 0)
-                if pc == 1 then return true end
-                if pc >= 2 then return false end
-            end
-        end
-        cursor = data.nextPageCursor
-        if type(cursor) ~= "string" or cursor == "" or cursor == "null" then return nil end
-        pages = pages + 1
-        task.wait(0.01)
-    end
-    return nil
-end
-
-local function hopWithVerify()
-    if not State.Queue then return false end
-    if State.IsHopping then return false end
+local function hopWithCandidate(candidate)
+    if not candidate then return false, "no_candidate" end
+    if State.IsHopping then return false, "busy" end
 
     State.IsHopping = true
+    State.HopStartTime = os.clock()
+    State.CurrentTarget = candidate.id
 
     setPill("VERIFY", Color3.fromRGB(255, 200, 120))
-    setStatus("Verify server...", Color3.fromRGB(255, 200, 100))
-
-    local target = State.Queue
+    setStatus("Verify " .. candidate.id:sub(1, 8) .. "...", Color3.fromRGB(255, 200, 100))
 
     local ok, verifyResult = pcall(function()
-        return verifyServerParallel(target.id)
+        return verifyServer(candidate.id)
     end)
 
     if not ok then verifyResult = nil end
 
     if verifyResult == false then
-        State.Queue = nil
-        addToBlacklist(target.id)
-        updateQueueUI()
+        addToBlacklist(candidate.id)
         State.IsHopping = false
         State.FailedHops = State.FailedHops + 1
         State.ConsecutiveFailures = State.ConsecutiveFailures + 1
-        setStatus("Server filled · refill", Color3.fromRGB(255, 150, 100))
+        updateUI()
+        setStatus("Server filled · next", Color3.fromRGB(255, 150, 100))
         setPill("RETRY", Color3.fromRGB(255, 150, 100))
-        return false
+        return false, "filled"
     end
 
-    State.Queue = nil
-    updateQueueUI()
-
     setPill("HOP", Color3.fromRGB(120, 255, 160))
-    setStatus("Vào 1ng · FPS" .. target.fps, Color3.fromRGB(120, 255, 160))
+    setStatus("Vào · FPS" .. candidate.fps .. " · " .. candidate.id:sub(1, 8), Color3.fromRGB(120, 255, 160))
 
-    addToBlacklist(target.id)
-    State.CurrentTarget = target.id
+    addToBlacklist(candidate.id)
 
     task.wait(CONFIG.HopPreDelay)
 
-    local teleportOk = fastTeleport(target.id)
+    local teleportOk = fastTeleport(candidate.id)
 
     if teleportOk then
-        State.TotalHops = State.TotalHops + 1
+        State.SuccessfulHops = State.SuccessfulHops + 1
         State.ConsecutiveFailures = 0
         State.IsHopping = false
+        updateUI()
         task.wait(CONFIG.PostHopWait)
-        return true
+        return true, "ok"
     else
         State.FailedHops = State.FailedHops + 1
         State.ConsecutiveFailures = State.ConsecutiveFailures + 1
         State.IsHopping = false
-        setStatus("Teleport fail", Color3.fromRGB(255, 100, 100))
+        updateUI()
+        setStatus("Teleport fail · next", Color3.fromRGB(255, 100, 100))
         setPill("FAIL", Color3.fromRGB(255, 100, 100))
-        return false
+        return false, "teleport_fail"
     end
 end
 
-local function waitForQueue(timeout)
-    local start = os.clock()
-    while not State.Queue do
-        if not ScreenGui.Parent then return false end
-        if (os.clock() - start) > timeout then return false end
-        if not State.IsScanning then
-            task.spawn(fillQueue)
-        end
-        task.wait(0.3)
-    end
-    return true
-end
-
-local function safeHopLoop(maxAttempts)
+local function hopAttempts(maxAttempts)
     local attempts = 0
+
     while attempts < maxAttempts do
         attempts = attempts + 1
 
         if not ScreenGui.Parent then return false end
-        if #Players:GetPlayers() <= 1 and State.CurrentTarget == nil then
-            return false
-        end
 
-        if not State.Queue then
-            if not waitForQueue(CONFIG.QueueFillTimeout) then
+        if getQueueSize() == 0 then
+            setStatus("Queue rỗng · refill", Color3.fromRGB(255, 200, 100))
+            setPill("SCAN", Color3.fromRGB(255, 200, 120))
+
+            if not State.IsScanning then
+                task.spawn(fillQueue)
+            end
+
+            local waited = 0
+            while getQueueSize() == 0 and waited < CONFIG.QueueFillTimeout * 10 do
+                if not ScreenGui.Parent then return false end
+                if not State.IsScanning and getQueueSize() == 0 then
+                    task.spawn(fillQueue)
+                end
+                task.wait(0.1)
+                waited = waited + 1
+            end
+
+            if getQueueSize() == 0 then
                 if getBlacklistCount() > CONFIG.BlacklistResetThreshold - 20 then
                     State.Blacklist = {}
-                    task.wait(2)
+                    setStatus("Reset blacklist", Color3.fromRGB(255, 150, 100))
+                    task.wait(1)
                 end
-                break
+                return false
             end
         end
 
-        if State.Queue then
-            if hopWithVerify() then
+        local candidate = popFromQueue()
+        updateUI()
+
+        if candidate then
+            local ok, reason = hopWithCandidate(candidate)
+
+            if ok then
                 return true
             end
         end
 
-        task.wait(0.2)
+        task.wait(0.1)
     end
 
     return false
@@ -829,10 +914,10 @@ local function mainLoop()
         local count = updatePlayerCount()
 
         if count == 1 then
-            setStatus("Solo · 1 người", Color3.fromRGB(120, 255, 160))
+            setStatus("Solo · chờ", Color3.fromRGB(120, 255, 160))
             setPill("SOLO", Color3.fromRGB(60, 220, 120))
 
-            if not State.Queue and not State.IsScanning then
+            if getQueueSize() < CONFIG.QueueTargetSize and not State.IsScanning then
                 task.spawn(fillQueue)
             end
 
@@ -852,7 +937,7 @@ local function mainLoop()
                     break
                 end
 
-                if not State.Queue and not State.IsScanning then
+                if getQueueSize() < CONFIG.QueueMinSize and not State.IsScanning then
                     task.spawn(fillQueue)
                 end
             end
@@ -861,9 +946,7 @@ local function mainLoop()
                 setStatus("Có người · hop", Color3.fromRGB(255, 180, 100))
                 setPill("PREP", Color3.fromRGB(255, 180, 100))
 
-                if waitForQueue(CONFIG.QueueFillTimeout) then
-                    safeHopLoop(CONFIG.HopAttemptsMax)
-                end
+                hopAttempts(CONFIG.HopAttemptsMax)
             end
             continue
         end
@@ -872,18 +955,11 @@ local function mainLoop()
             setStatus("2ng · tìm 1ng", Color3.fromRGB(255, 200, 100))
             setPill("HUNT", Color3.fromRGB(255, 200, 120))
 
-            if not State.Queue and not State.IsScanning then
+            if getQueueSize() < CONFIG.QueueTargetSize and not State.IsScanning then
                 task.spawn(fillQueue)
             end
 
-            if waitForQueue(CONFIG.QueueFillTimeout) then
-                safeHopLoop(CONFIG.HopAttemptsMax)
-            else
-                if not State.IsScanning then
-                    task.spawn(fillQueue)
-                end
-                task.wait(1)
-            end
+            hopAttempts(CONFIG.HopAttemptsMax)
             continue
         end
 
@@ -900,17 +976,11 @@ local function mainLoop()
 
         if #Players:GetPlayers() <= 1 then continue end
 
-        if not State.Queue and not State.IsScanning then
+        if getQueueSize() < CONFIG.QueueTargetSize and not State.IsScanning then
             task.spawn(fillQueue)
         end
 
-        if waitForQueue(CONFIG.QueueFillTimeout) then
-            safeHopLoop(CONFIG.HopAttemptsMax)
-        else
-            State.Blacklist = {}
-            setStatus("Reset · retry", Color3.fromRGB(255, 150, 100))
-            task.wait(1)
-        end
+        hopAttempts(CONFIG.HopAttemptsMax)
     end
 end
 
@@ -952,8 +1022,22 @@ UserInputService.InputEnded:Connect(function(input)
     end
 end)
 
+Players.PlayerAdded:Connect(function(plr)
+    if plr == LocalPlayer then return end
+    task.wait(0.2)
+    updatePlayerCount()
+    if getQueueSize() < CONFIG.QueueTargetSize and not State.IsScanning then
+        task.spawn(fillQueue)
+    end
+end)
+
+Players.PlayerRemoving:Connect(function()
+    task.wait(0.4)
+    updatePlayerCount()
+end)
+
 updatePlayerCount()
-updateQueueUI()
+updateUI()
 setStatus("Đang chạy", Color3.fromRGB(120, 255, 160))
 setPill("ON", Color3.fromRGB(60, 220, 120))
 
@@ -961,12 +1045,22 @@ task.spawn(mainLoop)
 
 task.spawn(function()
     while ScreenGui.Parent do
-        task.wait(5)
+        task.wait(3)
+
+        if State.IsScanning and (os.clock() - State.ScanStartTime) > CONFIG.ScanTimeout then
+            State.IsScanning = false
+            setStatus("Scan timeout · reset", Color3.fromRGB(255, 150, 100))
+        end
+
+        if State.IsHopping and (os.clock() - State.HopStartTime) > CONFIG.HopTimeout then
+            State.IsHopping = false
+            setStatus("Hop timeout · reset", Color3.fromRGB(255, 150, 100))
+        end
+
         if State.ConsecutiveFailures >= State.MaxConsecutiveFailures then
             State.Blacklist = {}
             State.ConsecutiveFailures = 0
             setStatus("Reset blacklist", Color3.fromRGB(255, 150, 100))
-            task.wait(1)
         end
     end
 end)
