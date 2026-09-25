@@ -3,7 +3,6 @@ local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
 local CoreGui = game:GetService("CoreGui")
 local UserInputService = game:GetService("UserInputService")
-local RunService = game:GetService("RunService")
 
 local LocalPlayer = Players.LocalPlayer
 local PLACE_ID = game.PlaceId
@@ -22,20 +21,21 @@ local CONFIG = {
     PageDelay = 0,
     PassDelay = 0.5,
     ConfirmDelay = 0.3,
-    PreTeleportDelay = 0.1,
+    PreTeleportDelay = 0.15,
     MaxPages = 25,
     ParallelBranches = 5,
     AutoHopDelay = 3,
     MaxTotalAllowed = 2,
+    ScanRetries = 4,
+    RetryWait = 1.5,
 }
 
 local Blacklist = {}
 local IsScanning = false
 local IsHopping = false
+local IsCountingDown = false
 local AutoEnabled = true
-local TargetTotal = nil
-local MonitorConn = nil
-local LastPlayerCount = 0
+local ScanFailCount = 0
 
 if CoreGui:FindFirstChild("PhantomUI") then CoreGui.PhantomUI:Destroy() end
 
@@ -354,15 +354,15 @@ local function fastTeleport(jobId)
     return success
 end
 
-local function scanForOnePlayer()
-    local pass1 = parallelScan(1)
+local function scanForTarget(targetPlaying)
+    local pass1 = parallelScan(targetPlaying)
     local count1 = 0
     for _ in pairs(pass1) do count1 = count1 + 1 end
     if count1 == 0 then return nil end
 
     task.wait(CONFIG.PassDelay)
 
-    local pass2 = parallelScan(1)
+    local pass2 = parallelScan(targetPlaying)
 
     local stable = {}
     for id, s in pairs(pass2) do
@@ -406,6 +406,7 @@ end
 local function performHop()
     if IsScanning or IsHopping then return end
     IsScanning = true
+    IsCountingDown = false
 
     setStatus("Đang quét server...", Color3.fromRGB(255, 200, 100), "...")
 
@@ -415,66 +416,135 @@ local function performHop()
         return
     end
 
-    local target = scanForOnePlayer()
+    local target = nil
+    local targetPlaying = 1
+    local mode = "1"
+
+    for attempt = 1, CONFIG.ScanRetries do
+        target = scanForTarget(1)
+        if target then
+            targetPlaying = 1
+            mode = "1"
+            break
+        end
+
+        setStatus("Quét lại " .. attempt .. "/" .. CONFIG.ScanRetries, Color3.fromRGB(255, 180, 100), "...")
+        task.wait(CONFIG.RetryWait)
+    end
+
+    if not target then
+        setStatus("Thử server 2 người...", Color3.fromRGB(255, 180, 100), "...")
+        for attempt = 1, 2 do
+            target = scanForTarget(2)
+            if target then
+                targetPlaying = 2
+                mode = "2"
+                break
+            end
+            task.wait(CONFIG.RetryWait)
+        end
+    end
 
     if not target then
         IsScanning = false
+        ScanFailCount = ScanFailCount + 1
         setStatus("Không có server", Color3.fromRGB(255, 120, 120), "FAIL")
-        task.wait(5)
+
+        if ScanFailCount >= 3 then
+            Blacklist = {}
+            ScanFailCount = 0
+            setStatus("Reset · thử lại", Color3.fromRGB(255, 200, 100), "...")
+            task.wait(2)
+        else
+            task.wait(5)
+        end
+
         setStatus("Đang chạy", Color3.fromRGB(120, 255, 160), "ON")
         return
     end
 
-    setStatus("Đang vào server...", Color3.fromRGB(120, 255, 160), "HOP")
+    ScanFailCount = 0
+    setStatus("Đang vào server " .. mode .. " người...", Color3.fromRGB(120, 255, 160), "HOP")
 
     task.wait(CONFIG.PreTeleportDelay)
 
     IsScanning = false
     IsHopping = true
     Blacklist[target.id] = true
-    TargetTotal = target.playing + 1
 
-    fastTeleport(target.id)
+    local ok = fastTeleport(target.id)
+
+    if not ok then
+        setStatus("Teleport fail · thử lại", Color3.fromRGB(255, 100, 100), "FAIL")
+        IsHopping = false
+        task.wait(1)
+        performHop()
+        return
+    end
 
     task.wait(3)
     IsHopping = false
     setStatus("Đang chạy", Color3.fromRGB(120, 255, 160), "ON")
 end
 
-local function startMonitor()
-    if MonitorConn then MonitorConn:Disconnect() end
-    MonitorConn = RunService.Heartbeat:Connect(function()
+local function startCountdown()
+    if IsCountingDown then return end
+    IsCountingDown = true
+
+    task.spawn(function()
+        setStatus("Có người vào · chờ " .. CONFIG.AutoHopDelay .. "s", Color3.fromRGB(255, 200, 120), "...")
+
+        for i = CONFIG.AutoHopDelay, 1, -1 do
+            if not AutoEnabled then
+                IsCountingDown = false
+                return
+            end
+
+            local cnt = #Players:GetPlayers()
+            if cnt <= CONFIG.MaxTotalAllowed then
+                setStatus("Đã về " .. cnt .. " người · hủy hop", Color3.fromRGB(120, 255, 160), "ON")
+                IsCountingDown = false
+                return
+            end
+
+            setStatus("Hop sau " .. i .. "s · " .. cnt .. " người", Color3.fromRGB(255, 180, 100), "...")
+            task.wait(1)
+        end
+
+        IsCountingDown = false
+
         if not AutoEnabled then return end
+        if #Players:GetPlayers() <= CONFIG.MaxTotalAllowed then return end
         if IsHopping or IsScanning then return end
 
-        local count = #Players:GetPlayers()
-        if count == LastPlayerCount then return end
-        LastPlayerCount = count
-
-        if count > CONFIG.MaxTotalAllowed then
-            setStatus("Server có " .. count .. " người · chờ " .. CONFIG.AutoHopDelay .. "s", Color3.fromRGB(255, 200, 120), "...")
-
-            task.spawn(function()
-                for i = CONFIG.AutoHopDelay, 1, -1 do
-                    if not AutoEnabled then return end
-                    local cnt = #Players:GetPlayers()
-                    if cnt <= CONFIG.MaxTotalAllowed then
-                        setStatus("Đã về " .. cnt .. " người", Color3.fromRGB(120, 255, 160), "ON")
-                        return
-                    end
-                    setStatus("Hop sau " .. i .. "s · " .. cnt .. " người", Color3.fromRGB(255, 180, 100), "...")
-                    task.wait(1)
-                end
-
-                if #Players:GetPlayers() > CONFIG.MaxTotalAllowed then
-                    performHop()
-                end
-            end)
-        else
-            setStatus("Server " .. count .. " người · ổn", Color3.fromRGB(120, 255, 160), "ON")
-        end
+        performHop()
     end)
 end
+
+Players.PlayerAdded:Connect(function(plr)
+    if plr == LocalPlayer then return end
+    if not AutoEnabled then return end
+
+    task.wait(0.3)
+    updatePlayerCount()
+
+    if IsHopping or IsScanning then return end
+
+    local count = #Players:GetPlayers()
+    if count > CONFIG.MaxTotalAllowed then
+        startCountdown()
+    end
+end)
+
+Players.PlayerRemoving:Connect(function()
+    task.wait(0.4)
+    updatePlayerCount()
+
+    local count = #Players:GetPlayers()
+    if count <= CONFIG.MaxTotalAllowed then
+        IsCountingDown = false
+    end
+end)
 
 local dragging, dragStart, startPos
 Header.InputBegan:Connect(function(input)
@@ -506,12 +576,11 @@ end)
 
 updatePlayerCount()
 setStatus("Đang chạy", Color3.fromRGB(120, 255, 160), "ON")
-startMonitor()
 
 task.spawn(function()
     task.wait(2)
     local count = #Players:GetPlayers()
     if count > CONFIG.MaxTotalAllowed then
-        performHop()
+        startCountdown()
     end
 end)
