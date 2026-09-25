@@ -1,512 +1,711 @@
---[[
-    ⚡ PHANTOM — HOP SERVER ÍT NGƯỜI ⚡
-    Game     : Steal an Egg
-    Version  : V13.2.1
-    Executor : Delta
-    Chức năng: Hop server 1 người + Auto Hop + Queue + UI
---]]
+local VERSION = "PHANTOM v13.2.1"
+local SCRIPT_NAME = "PHANTOM ⚡"
 
--- ==========================================================
---  CONFIG
--- ==========================================================
-local CONFIG = {
-    Version          = "V13.2.1",
-    ScanPasses       = 3,     -- số pass quét
-    PassDelay        = 5,     -- giây giữa các pass
-    HopDelay         = 3,     -- giây đếm ngược trước khi hop
-    AutoHopThreshold = 3,     -- hop khi server >= 3 người
-    RequestLimit     = 100,   -- số server mỗi request
-}
+if not game:IsLoaded() then game.Loaded:Wait() end
 
--- ==========================================================
---  SERVICES
--- ==========================================================
-local Players         = game:GetService("Players")
-local HttpService     = game:GetService("HttpService")
+local Players = game:GetService("Players")
+local HttpService = game:GetService("HttpService")
+local StarterGui = game:GetService("StarterGui")
 local TeleportService = game:GetService("TeleportService")
-local UserInputService= game:GetService("UserInputService")
+local CoreGui = game:GetService("CoreGui")
 
-local LP      = Players.LocalPlayer
-local PlaceId = game.PlaceId
-local JobId   = game.JobId
+local LocalPlayer = Players.LocalPlayer
+local waited = 0
+while not LocalPlayer and waited < 5 do
+    task.wait(0.1)
+    waited = waited + 0.1
+    LocalPlayer = Players.LocalPlayer
+end
 
--- ==========================================================
---  STATE
--- ==========================================================
+if not LocalPlayer then
+    warn("[PHANTOM] Không tìm thấy LocalPlayer sau 5 giây")
+    return
+end
+
+local function safeNum(v, default)
+    default = default or 0
+    if type(v) == "number" then return v end
+    local n = tonumber(v)
+    if n then return n end
+    return default
+end
+
+local function safeStr(v, default)
+    default = default or ""
+    if type(v) == "string" then return v end
+    if v == nil then return default end
+    return tostring(v)
+end
+
+local function getRequest()
+    if syn and syn.request then return syn.request end
+    if http_request then return http_request end
+    if request then return request end
+    if fluxus and fluxus.request then return fluxus.request end
+    return nil
+end
+
+local HttpRequest = getRequest()
+
+if not HttpRequest then
+    pcall(function()
+        StarterGui:SetCore("SendNotification", {
+            Title = "PHANTOM",
+            Text = "Executor không hỗ trợ HTTP",
+            Duration = 5,
+        })
+    end)
+    warn("[PHANTOM] Executor không hỗ trợ HTTP")
+    return
+end
+
+local function httpGet(url)
+    local ok, res = pcall(HttpRequest, {Url = url, Method = "GET"})
+    if not ok then return nil, "pcall fail" end
+    if type(res) ~= "table" then return nil, "response invalid" end
+    local status = safeNum(res.StatusCode or res.Status, 0)
+    local body = safeStr(res.Body or res.body, "")
+    return {Status = status, Body = body}
+end
+
 local State = {
-    AutoOn       = true,
-    IsScanning   = false,
-    QueuedServer = nil,
-    Status       = "Đang khởi động...",
-    CurrentCount = #Players:GetPlayers(),
-    Log          = {},
-    HopCountdown = nil,
+    Auto = true,
+    IsScanning = false,
+    IsHopping = false,
+    ScanStart = 0,
+    HopStart = 0,
+    SeenCount = 0,
+    FoundCount = 0,
+    FailCount = 0,
+    ConsecutiveFails = 0,
+    Status = "Đang khởi động",
+    Delay = 3,
 }
 
--- ==========================================================
---  UTIL
--- ==========================================================
-local function log(msg)
-    local line = string.format("[%s] %s", os.date("%H:%M:%S"), msg)
-    table.insert(State.Log, line)
-    if #State.Log > 300 then table.remove(State.Log, 1) end
-    print("[PHANTOM] " .. msg)
+local Queue = {}
+local Blacklist = {}
+local Logs = {}
+local MAX_PAGES = 10
+local MAX_QUEUE = 10
+local SCAN_TIMEOUT = 40
+local HOP_TIMEOUT = 15
+local BLACKLIST_MAX = 80
+local SCAN_DELAY = 0.05
+local PASS_DELAY = 2
+
+local function log(level, msg)
+    local entry = string.format("[%s][%s] %s", os.date("%H:%M:%S"), level, msg)
+    table.insert(Logs, entry)
+    if #Logs > 50 then table.remove(Logs, 1) end
+    print(entry)
 end
 
--- ==========================================================
---  UI
--- ==========================================================
-local guiParent = (gethui and gethui()) or game:GetService("CoreGui")
-pcall(function()
-    if guiParent:FindFirstChild("PHANTOM_HOP") then
-        guiParent.PHANTOM_HOP:Destroy()
+local function blacklistCount()
+    local c = 0
+    for _ in pairs(Blacklist) do c = c + 1 end
+    return c
+end
+
+local function addBlacklist(jobId)
+    if not jobId or jobId == "" then return end
+    Blacklist[jobId] = true
+    if blacklistCount() > BLACKLIST_MAX then
+        Blacklist = {}
+        log("warn", "Blacklist reset do vượt " .. BLACKLIST_MAX)
     end
-end)
-
-local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "PHANTOM_HOP"
-ScreenGui.ResetOnSpawn = false
-ScreenGui.IgnoreGuiInset = true
-ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-ScreenGui.Parent = guiParent
-
--- Khung chính
-local Main = Instance.new("Frame")
-Main.Name = "Main"
-Main.Size = UDim2.new(0, 320, 0, 340)
-Main.Position = UDim2.new(0, 20, 0.5, -170)
-Main.BackgroundColor3 = Color3.fromRGB(14, 14, 20)
-Main.BorderSizePixel = 0
-Main.Active = true
-Main.Parent = ScreenGui
-
-Instance.new("UICorner", Main).CornerRadius = UDim.new(0, 14)
-local stroke = Instance.new("UIStroke", Main)
-stroke.Color = Color3.fromRGB(140, 90, 255)
-stroke.Thickness = 1.5
-stroke.Transparency = 0.2
-stroke.Parent = Main
-
--- Header
-local Header = Instance.new("Frame")
-Header.Size = UDim2.new(1, 0, 0, 46)
-Header.BackgroundColor3 = Color3.fromRGB(24, 18, 46)
-Header.BorderSizePixel = 0
-Header.Parent = Main
-Instance.new("UICorner", Header).CornerRadius = UDim.new(0, 14)
-
-local hFix = Instance.new("Frame")
-hFix.Size = UDim2.new(1, 0, 0, 14)
-hFix.Position = UDim2.new(0, 0, 1, -14)
-hFix.BackgroundColor3 = Color3.fromRGB(24, 18, 46)
-hFix.BorderSizePixel = 0
-hFix.Parent = Header
-
-local Title = Instance.new("TextLabel")
-Title.BackgroundTransparency = 1
-Title.Size = UDim2.new(1, -110, 1, 0)
-Title.Position = UDim2.new(0, 14, 0, 0)
-Title.Font = Enum.Font.GothamBold
-Title.TextSize = 20
-Title.TextColor3 = Color3.fromRGB(215, 195, 255)
-Title.TextXAlignment = Enum.TextXAlignment.Left
-Title.Text = "⚡ PHANTOM"
-Title.Parent = Header
-
-local VerTag = Instance.new("TextLabel")
-VerTag.BackgroundTransparency = 1
-VerTag.Size = UDim2.new(0, 100, 1, 0)
-VerTag.Position = UDim2.new(1, -105, 0, 0)
-VerTag.Font = Enum.Font.Gotham
-VerTag.TextSize = 12
-VerTag.TextColor3 = Color3.fromRGB(155, 135, 215)
-VerTag.TextXAlignment = Enum.TextXAlignment.Right
-VerTag.Text = CONFIG.Version
-VerTag.Parent = Header
-
--- Kéo thả
-do
-    local dragging, dragStart, startPos
-    Header.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1
-        or input.UserInputType == Enum.UserInputType.Touch then
-            dragging   = true
-            dragStart  = input.Position
-            startPos   = Main.Position
-        end
-    end)
-    UserInputService.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1
-        or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = false
-        end
-    end)
-    UserInputService.InputChanged:Connect(function(input)
-        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
-        or input.UserInputType == Enum.UserInputType.Touch) then
-            local d = input.Position - dragStart
-            Main.Position = UDim2.new(
-                startPos.X.Scale, startPos.X.Offset + d.X,
-                startPos.Y.Scale, startPos.Y.Offset + d.Y
-            )
-        end
-    end)
 end
 
--- Body
-local Body = Instance.new("Frame")
-Body.BackgroundTransparency = 1
-Body.Size = UDim2.new(1, -24, 1, -120)
-Body.Position = UDim2.new(0, 12, 0, 56)
-Body.Parent = Main
-
-local function makeRow(y, label)
-    local f = Instance.new("Frame")
-    f.BackgroundColor3 = Color3.fromRGB(22, 22, 32)
-    f.BorderSizePixel = 0
-    f.Size = UDim2.new(1, 0, 0, 34)
-    f.Position = UDim2.new(0, 0, 0, y)
-    f.Parent = Body
-    Instance.new("UICorner", f).CornerRadius = UDim.new(0, 8)
-
-    local key = Instance.new("TextLabel")
-    key.BackgroundTransparency = 1
-    key.Size = UDim2.new(0.5, 0, 1, 0)
-    key.Position = UDim2.new(0, 12, 0, 0)
-    key.Font = Enum.Font.GothamMedium
-    key.TextSize = 13
-    key.TextColor3 = Color3.fromRGB(160, 150, 200)
-    key.TextXAlignment = Enum.TextXAlignment.Left
-    key.Text = label
-    key.Parent = f
-
-    local val = Instance.new("TextLabel")
-    val.BackgroundTransparency = 1
-    val.Size = UDim2.new(0.5, -12, 1, 0)
-    val.Position = UDim2.new(0.5, 0, 0, 0)
-    val.Font = Enum.Font.GothamBold
-    val.TextSize = 13
-    val.TextColor3 = Color3.fromRGB(230, 230, 250)
-    val.TextXAlignment = Enum.TextXAlignment.Right
-    val.Text = "..."
-    val.Parent = f
-
-    return val
+local function isBlacklisted(jobId)
+    return Blacklist[jobId] == true
 end
 
-local StatusVal = makeRow(0,   "Trạng thái")
-local CountVal  = makeRow(40,  "Số người hiện tại")
-local AutoVal   = makeRow(80,  "AUTO")
-local QueueVal  = makeRow(120, "Queue")
-
-local StatusLine = Instance.new("TextLabel")
-StatusLine.BackgroundTransparency = 1
-StatusLine.Size = UDim2.new(1, 0, 0, 44)
-StatusLine.Position = UDim2.new(0, 0, 0, 164)
-StatusLine.Font = Enum.Font.Gotham
-StatusLine.TextSize = 12
-StatusLine.TextColor3 = Color3.fromRGB(200, 180, 255)
-StatusLine.TextWrapped = true
-StatusLine.TextXAlignment = Enum.TextXAlignment.Left
-StatusLine.TextYAlignment = Enum.TextYAlignment.Top
-StatusLine.Text = "Đang khởi động..."
-StatusLine.Parent = Body
-
--- Nút
-local BtnHolder = Instance.new("Frame")
-BtnHolder.BackgroundTransparency = 1
-BtnHolder.Size = UDim2.new(1, -24, 0, 40)
-BtnHolder.Position = UDim2.new(0, 12, 1, -52)
-BtnHolder.Parent = Main
-
-local function makeBtn(text, x, w, color)
-    local b = Instance.new("TextButton")
-    b.Size = UDim2.new(0, w, 1, 0)
-    b.Position = UDim2.new(0, x, 0, 0)
-    b.BackgroundColor3 = color
-    b.BorderSizePixel = 0
-    b.Font = Enum.Font.GothamBold
-    b.TextSize = 13
-    b.TextColor3 = Color3.fromRGB(255, 255, 255)
-    b.Text = text
-    b.AutoButtonColor = true
-    b.Parent = BtnHolder
-    Instance.new("UICorner", b).CornerRadius = UDim.new(0, 8)
-    return b
-end
-
-local HopBtn  = makeBtn("HOP THỦ CÔNG", 0,   180, Color3.fromRGB(110, 60, 220))
-local CopyBtn = makeBtn("COPY LOG",     190, 106, Color3.fromRGB(50, 50, 70))
-
--- ==========================================================
---  UI UPDATE
--- ==========================================================
-local function updateUI()
-    StatusVal.Text = State.Status
-    CountVal.Text  = tostring(State.CurrentCount)
-
-    AutoVal.Text = State.AutoOn and "ON" or "OFF"
-    AutoVal.TextColor3 = State.AutoOn
-        and Color3.fromRGB(80, 230, 130)
-        or  Color3.fromRGB(230, 90, 90)
-
-    if State.QueuedServer then
-        QueueVal.Text = "ĐÃ SOẠN"
-        QueueVal.TextColor3 = Color3.fromRGB(80, 230, 130)
-    elseif State.IsScanning then
-        QueueVal.Text = "ĐANG QUÉT..."
-        QueueVal.TextColor3 = Color3.fromRGB(255, 200, 90)
-    else
-        QueueVal.Text = "TRỐNG"
-        QueueVal.TextColor3 = Color3.fromRGB(200, 200, 220)
+local function inQueue(jobId)
+    for _, s in ipairs(Queue) do
+        if s.JobId == jobId then return true end
     end
-
-    StatusLine.Text = State.Status
+    return false
 end
 
--- ==========================================================
---  API SERVER
--- ==========================================================
-local function fetchServers()
+local function sortQueue()
+    table.sort(Queue, function(a, b)
+        if a.Stability ~= b.Stability then
+            return a.Stability > b.Stability
+        end
+        return a.Score > b.Score
+    end)
+end
+
+local function addToQueue(server)
+    if not server or not server.JobId or server.JobId == "" then return end
+    if server.JobId == game.JobId then return end
+    if isBlacklisted(server.JobId) then return end
+    if inQueue(server.JobId) then return end
+    if #Queue >= MAX_QUEUE then return end
+    table.insert(Queue, server)
+    sortQueue()
+end
+
+local function getScore(playerCount)
+    if playerCount == 1 then return 1000 end
+    if playerCount == 2 then return 200 end
+    if playerCount == 3 then return 50 end
+    return 0
+end
+
+local function fetchServers(cursor)
     local url = string.format(
-        "https://games.roblox.com/v1/games/%d/servers/Public?limit=%d&sortOrder=Asc",
-        PlaceId, CONFIG.RequestLimit
+        "https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100",
+        game.PlaceId
     )
-    local ok, res = pcall(function()
-        return HttpService:JSONDecode(game:HttpGet(url))
-    end)
-    if ok and res and res.data then
-        return res.data
+    if cursor and cursor ~= "" then
+        url = url .. "&cursor=" .. cursor
     end
-    return {}
+    local res, err = httpGet(url)
+    if not res then return nil, err end
+    if res.Status == 429 or res.Status >= 500 then
+        return nil, "api error " .. res.Status
+    end
+    if res.Status ~= 200 then
+        return nil, "status " .. res.Status
+    end
+    local ok, data = pcall(HttpService.JSONDecode, HttpService, res.Body)
+    if not ok or type(data) ~= "table" then return nil, "json fail" end
+    return data
 end
 
--- ==========================================================
---  SCAN SERVER 1 NGƯỜI
--- ==========================================================
-local function scanOnePersonServer()
-    if State.IsScanning then return nil end
-    State.IsScanning = true
-    updateUI()
+local function scanOnce(passNum)
+    local seen = {}
+    local cursor = nil
+    local lastCursor = nil
+    local cursorRepeat = 0
+    local pageCount = 0
+    local startTime = tick()
 
-    local candidates = {}
+    while pageCount < MAX_PAGES do
+        if not State.IsScanning then break end
+        if tick() - startTime > SCAN_TIMEOUT then
+            log("warn", "Scan pass " .. passNum .. " quá timeout")
+            break
+        end
+        local data, err = fetchServers(cursor)
+        if not data then
+            log("warn", "Scan pass " .. passNum .. " lỗi: " .. tostring(err))
+            State.ConsecutiveFails = State.ConsecutiveFails + 1
+            if State.ConsecutiveFails >= 6 then
+                Blacklist = {}
+                State.ConsecutiveFails = 0
+                log("warn", "Reset blacklist do 6 fail liên tiếp")
+            end
+            break
+        end
+        local servers = data.data
+        if type(servers) ~= "table" then break end
+        if #servers == 0 then break end
 
-    for pass = 1, CONFIG.ScanPasses do
-        State.Status = string.format(
-            "Đang check qua server hiện có (Pass %d/%d)...",
-            pass, CONFIG.ScanPasses
-        )
-        updateUI()
-
-        local servers = fetchServers()
-        local found   = {}
-        for _, s in ipairs(servers) do
-            if s.playing == 1 and s.id ~= JobId then
-                found[s.id] = s
+        for _, srv in ipairs(servers) do
+            local jobId = safeStr(srv.id, "")
+            local playing = safeNum(srv.playing, 0)
+            local maxPlayers = safeNum(srv.maxPlayers, 0)
+            if jobId ~= "" and jobId ~= game.JobId then
+                State.SeenCount = State.SeenCount + 1
+                if not seen[jobId] then
+                    seen[jobId] = true
+                    if playing == 1 or playing == 2 then
+                        if not isBlacklisted(jobId) then
+                            local existing = nil
+                            for _, q in ipairs(Queue) do
+                                if q.JobId == jobId then existing = q break end
+                            end
+                            if existing then
+                                existing.Passes[passNum] = true
+                                local passCount = 0
+                                for _ in pairs(existing.Passes) do passCount = passCount + 1 end
+                                if passCount >= 3 then
+                                    existing.Stability = 3
+                                elseif passCount == 2 then
+                                    existing.Stability = 2
+                                else
+                                    existing.Stability = 1
+                                end
+                            else
+                                local entry = {
+                                    JobId = jobId,
+                                    Playing = playing,
+                                    MaxPlayers = maxPlayers,
+                                    Score = getScore(playing),
+                                    Stability = 1,
+                                    Passes = {[passNum] = true},
+                                }
+                                addToQueue(entry)
+                                State.FoundCount = State.FoundCount + 1
+                            end
+                        end
+                    end
+                end
             end
         end
 
-        if pass == 1 then
-            for id, s in pairs(found) do
-                candidates[id] = { data = s, hits = 1 }
-            end
+        pageCount = pageCount + 1
+        cursor = data.nextPageCursor
+        if not cursor or cursor == "" then break end
+        if cursor == lastCursor then
+            cursorRepeat = cursorRepeat + 1
+            if cursorRepeat >= 2 then break end
         else
-            local nextCand = {}
-            for id, c in pairs(candidates) do
-                if found[id] then
-                    c.hits = c.hits + 1
-                    c.data = found[id]
-                    nextCand[id] = c
-                end
-            end
-            candidates = nextCand
+            cursorRepeat = 0
         end
-
-        if pass < CONFIG.ScanPasses then
-            State.Status = string.format("Đang lọc server... (%ds)", CONFIG.PassDelay)
-            updateUI()
-            task.wait(CONFIG.PassDelay)
-        end
+        lastCursor = cursor
+        task.wait(SCAN_DELAY)
     end
-
-    -- Chọn server tốt nhất: qua đủ 3 pass, FPS thấp + Ping cao
-    local best = nil
-    for _, c in pairs(candidates) do
-        if c.hits == CONFIG.ScanPasses then
-            if not best then
-                best = c.data
-            else
-                local bf, bp = best.fps or 60, best.ping or 0
-                local cf, cp = c.data.fps or 60, c.data.ping or 0
-                if cf < bf or (cf == bf and cp > bp) then
-                    best = c.data
-                end
-            end
-        end
-    end
-
-    State.IsScanning = false
-    if best then
-        State.Status = "Đã xác định server ít người!"
-        log(string.format(
-            "Đã xác định server 1 người: %s (FPS=%s, Ping=%s)",
-            best.id, tostring(best.fps), tostring(best.ping)
-        ))
-    else
-        log("Không tìm thấy server 1 người ổn định")
-    end
-    updateUI()
-    return best
+    log("info", "Pass " .. passNum .. " xong: " .. pageCount .. " trang")
 end
 
--- ==========================================================
---  HOP
--- ==========================================================
-local function hopTo(serverData)
-    if not serverData or not serverData.id then return end
-
-    State.Status = "Đang tạo cổng kết nối..."
-    updateUI()
-    task.wait(0.3)
-
-    State.Status = "Đang vào server..."
-    updateUI()
-
-    log("Đang vào server: " .. serverData.id)
+local function scanServers()
+    if State.IsScanning then return end
+    State.IsScanning = true
+    State.ScanStart = tick()
+    State.Status = "Đang dò server..."
+    log("info", "Bắt đầu scan 3 pass")
     local ok, err = pcall(function()
-        TeleportService:TeleportToPlaceInstance(PlaceId, serverData.id, LP)
+        scanOnce(1)
+        task.wait(PASS_DELAY)
+        if not State.IsScanning then return end
+        scanOnce(2)
+        task.wait(PASS_DELAY)
+        if not State.IsScanning then return end
+        scanOnce(3)
     end)
     if not ok then
-        log("Lỗi teleport: " .. tostring(err))
-        State.Status = "Lỗi kết nối, thử lại..."
-        updateUI()
+        log("error", "Scan lỗi: " .. tostring(err))
+    end
+    State.IsScanning = false
+    sortQueue()
+    log("info", "Scan hoàn tất. Queue: " .. #Queue)
+end
+
+local function verifyServer(jobId)
+    for i = 1, 2 do
+        local cursor = nil
+        local pages = 0
+        while pages < 5 do
+            local data, err = fetchServers(cursor)
+            if not data then
+                log("warn", "Verify lỗi: " .. tostring(err))
+                break
+            end
+            for _, srv in ipairs(data.data or {}) do
+                if safeStr(srv.id, "") == jobId then
+                    local playing = safeNum(srv.playing, 0)
+                    if playing == 1 then
+                        return true
+                    else
+                        return false
+                    end
+                end
+            end
+            cursor = data.nextPageCursor
+            if not cursor or cursor == "" then break end
+            pages = pages + 1
+            task.wait(0.1)
+        end
+        task.wait(0.5)
+    end
+    return nil
+end
+
+local function teleportToServer(jobId)
+    task.wait(0.3)
+    local ok = pcall(function()
+        TeleportService:TeleportToPlaceInstance(game.PlaceId, jobId, LocalPlayer)
+    end)
+    if ok then return true end
+    log("warn", "TeleportToPlaceInstance fail, thử TeleportAsync")
+    ok = pcall(function()
+        TeleportService:TeleportAsync(game.PlaceId, {LocalPlayer}, {
+            ServerInstanceId = jobId
+        })
+    end)
+    if ok then return true end
+    log("warn", "TeleportAsync fail, thử không options")
+    ok = pcall(function()
+        TeleportService:TeleportAsync(game.PlaceId, {LocalPlayer})
+    end)
+    return ok
+end
+
+local function hopToServer(server)
+    if not server or not server.JobId then return false end
+    if State.IsHopping then return false end
+    State.IsHopping = true
+    State.HopStart = tick()
+    State.Status = "Đang xác nhận..."
+    log("info", "Verify server " .. server.JobId)
+
+    local verify = verifyServer(server.JobId)
+    if verify == false then
+        log("warn", "Server đã đầy, blacklist")
+        addBlacklist(server.JobId)
+        State.IsHopping = false
+        return false
+    end
+
+    State.Status = "Đang tạo cổng kết nối..."
+    local ok = teleportToServer(server.JobId)
+    if not ok then
+        log("error", "Teleport fail")
+        addBlacklist(server.JobId)
+        State.FailCount = State.FailCount + 1
+        State.ConsecutiveFails = State.ConsecutiveFails + 1
+        if State.ConsecutiveFails >= 6 then
+            Blacklist = {}
+            State.ConsecutiveFails = 0
+            log("warn", "Reset blacklist do 6 fail")
+        end
+        State.IsHopping = false
+        return false
+    end
+
+    State.Status = "Đang vào..."
+    task.wait(3)
+    State.IsHopping = false
+    return true
+end
+
+local function findCandidate()
+    sortQueue()
+    for _, s in ipairs(Queue) do
+        if not isBlacklisted(s.JobId) then return s end
+    end
+    return nil
+end
+
+local function tryHop()
+    if State.IsHopping then return end
+    if State.IsScanning then
+        State.Status = "Đang chờ scan..."
+        return
+    end
+    local candidate = findCandidate()
+    if not candidate then
+        State.Status = "Queue rỗng, scan lại"
+        task.spawn(scanServers)
+        return
+    end
+    for i = #Queue, 1, -1 do
+        if Queue[i].JobId == candidate.JobId then
+            table.remove(Queue, i)
+            break
+        end
+    end
+    local ok = hopToServer(candidate)
+    if not ok then
+        addBlacklist(candidate.JobId)
+        State.FailCount = State.FailCount + 1
+        State.ConsecutiveFails = State.ConsecutiveFails + 1
+        if State.ConsecutiveFails >= 6 then
+            Blacklist = {}
+            State.ConsecutiveFails = 0
+            log("warn", "Reset blacklist")
+        end
     end
 end
 
--- ==========================================================
---  MONITOR SỐ NGƯỜI
--- ==========================================================
+local function getPlayerCount()
+    return #Players:GetPlayers()
+end
+
+local function buildUI()
+    local parent = nil
+    pcall(function()
+        if CoreGui then parent = CoreGui end
+    end)
+    if not parent then
+        parent = LocalPlayer:FindFirstChild("PlayerGui")
+    end
+    if not parent then
+        log("error", "Không tìm được parent UI")
+        return nil
+    end
+
+    pcall(function()
+        local old = parent:FindFirstChild("PhantomUI")
+        if old then old:Destroy() end
+    end)
+
+    local ScreenGui = Instance.new("ScreenGui")
+    ScreenGui.Name = "PhantomUI"
+    ScreenGui.ResetOnSpawn = false
+    ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    ScreenGui.Parent = parent
+
+    local MainFrame = Instance.new("Frame")
+    MainFrame.Name = "MainFrame"
+    MainFrame.Size = UDim2.new(0, 320, 0, 240)
+    MainFrame.Position = UDim2.new(0, 20, 0, 80)
+    MainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 30)
+    MainFrame.BorderSizePixel = 0
+    MainFrame.Active = true
+    MainFrame.Draggable = true
+    MainFrame.Parent = ScreenGui
+
+    local UICorner = Instance.new("UICorner")
+    UICorner.CornerRadius = UDim.new(0, 12)
+    UICorner.Parent = MainFrame
+
+    local Stroke = Instance.new("UIStroke")
+    Stroke.Color = Color3.fromRGB(120, 80, 220)
+    Stroke.Thickness = 1.5
+    Stroke.Parent = MainFrame
+
+    local Logo = Instance.new("TextLabel")
+    Logo.Name = "Logo"
+    Logo.Size = UDim2.new(1, -100, 0, 32)
+    Logo.Position = UDim2.new(0, 10, 0, 8)
+    Logo.BackgroundTransparency = 1
+    Logo.Text = SCRIPT_NAME
+    Logo.TextColor3 = Color3.fromRGB(200, 180, 255)
+    Logo.TextSize = 20
+    Logo.Font = Enum.Font.GothamBold
+    Logo.TextXAlignment = Enum.TextXAlignment.Left
+    Logo.Parent = MainFrame
+
+    local StatusPill = Instance.new("TextLabel")
+    StatusPill.Name = "StatusPill"
+    StatusPill.Size = UDim2.new(0, 78, 0, 22)
+    StatusPill.Position = UDim2.new(1, -88, 0, 12)
+    StatusPill.BackgroundColor3 = Color3.fromRGB(40, 160, 80)
+    StatusPill.Text = "AUTO: ON"
+    StatusPill.TextColor3 = Color3.fromRGB(255, 255, 255)
+    StatusPill.TextSize = 12
+    StatusPill.Font = Enum.Font.GothamBold
+    StatusPill.Parent = MainFrame
+    local PillCorner = Instance.new("UICorner")
+    PillCorner.CornerRadius = UDim.new(1, 0)
+    PillCorner.Parent = StatusPill
+
+    local InfoFrame = Instance.new("Frame")
+    InfoFrame.Name = "InfoFrame"
+    InfoFrame.Size = UDim2.new(1, -20, 0, 100)
+    InfoFrame.Position = UDim2.new(0, 10, 0, 48)
+    InfoFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 45)
+    InfoFrame.BorderSizePixel = 0
+    InfoFrame.Parent = MainFrame
+    local InfoCorner = Instance.new("UICorner")
+    InfoCorner.CornerRadius = UDim.new(0, 8)
+    InfoCorner.Parent = InfoFrame
+
+    local function makeRow(key, display, y)
+        local lbl = Instance.new("TextLabel")
+        lbl.Name = key .. "Label"
+        lbl.Size = UDim2.new(0.5, 0, 0, 22)
+        lbl.Position = UDim2.new(0, 10, 0, y)
+        lbl.BackgroundTransparency = 1
+        lbl.TextColor3 = Color3.fromRGB(180, 180, 200)
+        lbl.TextSize = 14
+        lbl.Font = Enum.Font.Gotham
+        lbl.TextXAlignment = Enum.TextXAlignment.Left
+        lbl.Text = display
+        lbl.Parent = InfoFrame
+
+        local val = Instance.new("TextLabel")
+        val.Name = key .. "Value"
+        val.Size = UDim2.new(0.5, -10, 0, 22)
+        val.Position = UDim2.new(0.5, 0, 0, y)
+        val.BackgroundTransparency = 1
+        val.TextColor3 = Color3.fromRGB(255, 255, 255)
+        val.TextSize = 14
+        val.Font = Enum.Font.GothamBold
+        val.TextXAlignment = Enum.TextXAlignment.Right
+        val.Text = "-"
+        val.Parent = InfoFrame
+    end
+
+    makeRow("Players", "Số người", 6)
+    makeRow("Found", "Found", 30)
+    makeRow("Queue", "Queue", 54)
+    makeRow("Status", "Trạng thái", 78)
+
+    local ButtonFrame = Instance.new("Frame")
+    ButtonFrame.Name = "ButtonFrame"
+    ButtonFrame.Size = UDim2.new(1, -20, 0, 40)
+    ButtonFrame.Position = UDim2.new(0, 10, 1, -52)
+    ButtonFrame.BackgroundTransparency = 1
+    ButtonFrame.Parent = MainFrame
+
+    local function makeButton(name, text, xOffset)
+        local btn = Instance.new("TextButton")
+        btn.Name = name
+        btn.Size = UDim2.new(0, 92, 0, 36)
+        btn.Position = UDim2.new(0, xOffset, 0, 0)
+        btn.BackgroundColor3 = Color3.fromRGB(80, 50, 160)
+        btn.Text = text
+        btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        btn.TextSize = 13
+        btn.Font = Enum.Font.GothamBold
+        btn.Parent = ButtonFrame
+        local c = Instance.new("UICorner")
+        c.CornerRadius = UDim.new(0, 6)
+        c.Parent = btn
+        return btn
+    end
+
+    local AutoButton = makeButton("AutoButton", "AUTO: ON", 0)
+    local HopButton = makeButton("HopButton", "Hop thủ công", 100)
+    local CopyButton = makeButton("CopyButton", "Copy info", 200)
+
+    return {
+        ScreenGui = ScreenGui,
+        MainFrame = MainFrame,
+        StatusPill = StatusPill,
+        InfoFrame = InfoFrame,
+        AutoButton = AutoButton,
+        HopButton = HopButton,
+        CopyButton = CopyButton,
+    }
+end
+
+local UI = buildUI()
+
+if not UI then
+    warn("[PHANTOM] Không tạo được UI")
+    return
+end
+
+pcall(function()
+    StarterGui:SetCore("SendNotification", {
+        Title = "PHANTOM",
+        Text = "Script đã chạy",
+        Duration = 3,
+    })
+end)
+
+local function updateUI()
+    if not UI then return end
+    pcall(function()
+        local playerCount = getPlayerCount()
+        local playersVal = UI.InfoFrame:FindFirstChild("PlayersValue")
+        local foundVal = UI.InfoFrame:FindFirstChild("FoundValue")
+        local queueVal = UI.InfoFrame:FindFirstChild("QueueValue")
+        local statusVal = UI.InfoFrame:FindFirstChild("StatusValue")
+        if playersVal then playersVal.Text = tostring(playerCount) end
+        if foundVal then foundVal.Text = tostring(State.FoundCount) end
+        if queueVal then queueVal.Text = tostring(#Queue) end
+        if statusVal then statusVal.Text = State.Status end
+
+        UI.StatusPill.Text = State.Auto and "AUTO: ON" or "AUTO: OFF"
+        UI.StatusPill.BackgroundColor3 = State.Auto
+            and Color3.fromRGB(40, 160, 80)
+            or Color3.fromRGB(120, 40, 40)
+        UI.AutoButton.Text = State.Auto and "AUTO: ON" or "AUTO: OFF"
+    end)
+end
+
+UI.AutoButton.MouseButton1Click:Connect(function()
+    State.Auto = not State.Auto
+    State.Status = State.Auto and "Đang chạy" or "Đã tắt"
+    log("info", "Auto = " .. tostring(State.Auto))
+end)
+
+UI.HopButton.MouseButton1Click:Connect(function()
+    State.Status = "Đang dò server..."
+    task.spawn(function()
+        scanServers()
+        tryHop()
+    end)
+end)
+
+UI.CopyButton.MouseButton1Click:Connect(function()
+    local lines = {
+        "[PHANTOM] " .. VERSION,
+        "Số người: " .. tostring(getPlayerCount()),
+        "Queue: " .. tostring(#Queue),
+        "Found: " .. tostring(State.FoundCount),
+        "Seen: " .. tostring(State.SeenCount),
+        "Fails: " .. tostring(State.FailCount),
+        "Status: " .. State.Status,
+    }
+    local text = table.concat(lines, "\n")
+    pcall(function()
+        if setclipboard then setclipboard(text) end
+    end)
+    log("info", "Đã copy info")
+end)
+
 task.spawn(function()
     while true do
         task.wait(0.5)
-        State.CurrentCount = #Players:GetPlayers()
         updateUI()
     end
 end)
 
--- ==========================================================
---  BACKGROUND SCANNER (soạn trước server 1 người)
--- ==========================================================
-task.spawn(function()
+local countdownActive = false
+local countdownRemaining = 0
+
+local function monitorLoop()
     while true do
-        task.wait(2)
-        if State.AutoOn
-        and not State.IsScanning
-        and not State.QueuedServer then
-            local s = scanOnePersonServer()
-            if s and s.id ~= JobId then
-                State.QueuedServer = s
-                log("Đã soạn server dự phòng: " .. s.id)
-                updateUI()
+        task.wait(1)
+        if State.Auto then
+            local playerCount = getPlayerCount()
+            if playerCount >= 3 and not countdownActive and not State.IsHopping then
+                countdownActive = true
+                countdownRemaining = State.Delay
+                State.Status = "Đang đếm ngược " .. countdownRemaining .. "s"
+                log("info", "Có " .. playerCount .. " người, bắt đầu countdown")
             end
-        end
-    end
-end)
-
--- ==========================================================
---  AUTO HOP LOGIC
--- ==========================================================
-task.spawn(function()
-    while true do
-        task.wait(0.5)
-
-        if not State.AutoOn then
-            State.HopCountdown = nil
-        else
-            local count = #Players:GetPlayers()
-
-            -- Case 1: chỉ mình ta → reset đếm ngược
-            if count <= 1 then
-                State.HopCountdown = nil
-
-            -- Case 2: có 1 người khác vào (2 người) → nếu có queue thì hop luôn
-            elseif count == 2 then
-                State.HopCountdown = nil
-                if State.QueuedServer then
-                    local q = State.QueuedServer
-                    State.QueuedServer = nil
-                    log("Có người vào — hop sang server 1 người đã soạn")
-                    hopTo(q)
-                    task.wait(5)
-                end
-
-            -- Case 3: server đông (>= 3) → đếm ngược 3s rồi hop
-            elseif count >= CONFIG.AutoHopThreshold then
-                if not State.HopCountdown then
-                    State.HopCountdown = tick()
-                    log(string.format(
-                        "Server đông (%d người) — đếm ngược %ds",
-                        count, CONFIG.HopDelay
-                    ))
-                elseif tick() - State.HopCountdown >= CONFIG.HopDelay then
-                    State.HopCountdown = nil
-                    if #Players:GetPlayers() >= CONFIG.AutoHopThreshold then
-                        log("Vẫn đông — tiến hành hop!")
-                        local q = State.QueuedServer
-                        State.QueuedServer = nil
-                        if q then
-                            hopTo(q)
-                        else
-                            local s = scanOnePersonServer()
-                            if s then hopTo(s) end
+            if countdownActive then
+                if playerCount <= 2 then
+                    countdownActive = false
+                    State.Status = "Đang chạy"
+                    log("info", "Hủy countdown, người rời")
+                else
+                    countdownRemaining = countdownRemaining - 1
+                    if countdownRemaining <= 0 then
+                        countdownActive = false
+                        State.Status = "Bắt đầu hop"
+                        log("info", "Countdown xong, bắt đầu hop")
+                        if #Queue < 2 then
+                            task.spawn(scanServers)
+                            task.wait(2)
                         end
-                        task.wait(5)
+                        tryHop()
                     else
-                        log("Người đã rời — hủy hop")
+                        State.Status = "Đang đếm ngược " .. countdownRemaining .. "s"
                     end
                 end
             end
         end
     end
-end)
+end
 
--- ==========================================================
---  BUTTONS
--- ==========================================================
-HopBtn.MouseButton1Click:Connect(function()
-    if State.IsScanning then return end
-    task.spawn(function()
-        local s = scanOnePersonServer()
-        if s then
-            hopTo(s)
-        else
-            State.Status = "Không tìm thấy server 1 người"
-            updateUI()
+local function watchdogLoop()
+    while true do
+        task.wait(3)
+        local now = tick()
+        if State.IsScanning and now - State.ScanStart > SCAN_TIMEOUT then
+            State.IsScanning = false
+            log("warn", "Watchdog: reset IsScanning")
         end
-    end)
-end)
-
-CopyBtn.MouseButton1Click:Connect(function()
-    local text = table.concat(State.Log, "\n")
-    if setclipboard then
-        setclipboard(text)
-        log("Đã copy log vào clipboard")
+        if State.IsHopping and now - State.HopStart > HOP_TIMEOUT then
+            State.IsHopping = false
+            log("warn", "Watchdog: reset IsHopping")
+        end
     end
-end)
+end
 
--- ==========================================================
---  KHỞI ĐỘNG
--- ==========================================================
-log("⚡ PHANTOM " .. CONFIG.Version .. " đã khởi động — AUTO: ON")
-State.Status = "Đang check qua server hiện có..."
-updateUI()
-
--- Auto scan ngay khi load
-task.spawn(function()
-    task.wait(1)
-    local s = scanOnePersonServer()
-    if s and s.id ~= JobId then
-        State.QueuedServer = s
-        updateUI()
+local function refillLoop()
+    while true do
+        task.wait(5)
+        if State.Auto and #Queue < 2 and not State.IsScanning then
+            State.Status = "Queue thiếu, scan lại"
+            task.spawn(scanServers)
+        end
     end
-end)
+end
+
+log("info", SCRIPT_NAME .. " Loaded")
+State.Status = "Đang chạy"
+
+task.spawn(scanServers)
+task.spawn(monitorLoop)
+task.spawn(watchdogLoop)
+task.spawn(refillLoop)
