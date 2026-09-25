@@ -1,423 +1,319 @@
 local Players = game:GetService("Players")
 local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
-local RunService = game:GetService("RunService")
+local CoreGui = game:GetService("CoreGui")
+local UserInputService = game:GetService("UserInputService")
 
 local LocalPlayer = Players.LocalPlayer
 local PLACE_ID = game.PlaceId
 local JOB_ID = game.JobId
 
-local function notify(text, duration)
-    pcall(function()
-        game:GetService("StarterGui"):SetCore("SendNotification", {
-            Title = "HOP SERVER",
-            Text = tostring(text),
-            Duration = duration or 4
-        })
-    end)
-end
-
 local function getHttp()
-    if syn and syn.request then return syn.request end
     if http_request then return http_request end
     if request then return request end
+    if syn and syn.request then return syn.request end
     if fluxus and fluxus.request then return fluxus.request end
-    if krnl and krnl.request then return krnl.request end
-    if http and http.request then return http.request end
     return nil
 end
 local http = getHttp()
 
-if not http then
-    notify("Lỗi: không có HTTP")
-    return
-end
-
-local CONFIG = {
-    MaxPages = 30,
-    RetryDelay = 4,
-    AutoHopDelay = 3,
-    MaxTotalAllowed = 2,
-    PostCheckDelay = 4,
-    RequestRetries = 3,
-    VerifyRetries = 2,
-}
-
 local Blacklist = {}
 local IsScanning = false
-local IsHopping = false
-local AutoEnabled = true
-local MonitorConn = nil
-local LastPlayerCount = 0
-local TeleportPending = false
-local NeedHop = false
-local CountdownGen = 0
-local PostCheckGen = 0
+local LoaderActive = false
+local loaderCoroutine = nil
 
-local function requestUrl(url)
-    if not http then return nil end
-    for attempt = 1, CONFIG.RequestRetries do
-        local ok, res = pcall(function()
-            return http({ Url = url, Method = "GET" })
-        end)
-        if ok and res then
-            local body = res.Body or res.body
-            if type(body) == "string" and #body > 0 then
-                local ok2, data = pcall(function()
-                    return HttpService:JSONDecode(body)
-                end)
-                if ok2 and type(data) == "table" and type(data.data) == "table" then
-                    return data
-                end
-            end
+if CoreGui:FindFirstChild("HopUI") then CoreGui.HopUI:Destroy() end
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "HopUI"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.IgnoreGuiInset = true
+ScreenGui.DisplayOrder = 999999
+ScreenGui.Parent = CoreGui
+
+local Container = Instance.new("Frame")
+Container.Size = UDim2.new(0, 200, 0, 110)
+Container.Position = UDim2.new(0, 20, 0.5, -55)
+Container.BackgroundTransparency = 1
+Container.Parent = ScreenGui
+
+local Btn = Instance.new("TextButton")
+Btn.Size = UDim2.new(0, 80, 0, 80)
+Btn.Position = UDim2.new(0.5, -40, 0, 0)
+Btn.BackgroundColor3 = Color3.fromRGB(60, 180, 120)
+Btn.Text = "HOP"
+Btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+Btn.Font = Enum.Font.GothamBold
+Btn.TextSize = 18
+Btn.AutoButtonColor = false
+Btn.Active = true
+Btn.Parent = Container
+
+local BtnCorner = Instance.new("UICorner")
+BtnCorner.CornerRadius = UDim.new(1, 0)
+BtnCorner.Parent = Btn
+
+local StatusLabel = Instance.new("TextLabel")
+StatusLabel.Size = UDim2.new(1, 0, 0, 22)
+StatusLabel.Position = UDim2.new(0, 0, 0, 84)
+StatusLabel.BackgroundColor3 = Color3.fromRGB(20, 22, 30)
+StatusLabel.BackgroundTransparency = 0.1
+StatusLabel.BorderSizePixel = 0
+StatusLabel.Text = "Sẵn sàng"
+StatusLabel.TextColor3 = Color3.fromRGB(200, 220, 255)
+StatusLabel.Font = Enum.Font.GothamBold
+StatusLabel.TextSize = 11
+StatusLabel.TextWrapped = false
+StatusLabel.Parent = Container
+
+local StatusCorner = Instance.new("UICorner")
+StatusCorner.CornerRadius = UDim.new(0, 6)
+StatusCorner.Parent = StatusLabel
+
+local SPINNER = {"|", "/", "-", "\\"}
+
+local function startLoading(text)
+    LoaderActive = false
+    task.wait()
+    LoaderActive = true
+    StatusLabel.TextColor3 = Color3.fromRGB(255, 220, 120)
+    loaderCoroutine = task.spawn(function()
+        local i = 1
+        while LoaderActive do
+            StatusLabel.Text = text .. " " .. SPINNER[i]
+            i = i + 1
+            if i > #SPINNER then i = 1 end
+            task.wait(0.15)
         end
-        task.wait(0.25)
+    end)
+end
+
+local function stopLoading(finalText, color)
+    LoaderActive = false
+    loaderCoroutine = nil
+    if finalText then
+        StatusLabel.Text = finalText
+        StatusLabel.TextColor3 = color or Color3.fromRGB(200, 220, 255)
     end
-    return nil
 end
 
-local function scanWithFilter(minP, maxP)
-    local result = {}
-    local cursor = ""
-    local pages = 0
-    local totalSeen = 0
+local dragActive = false
+local dragStartInput = nil
+local dragStartPos = nil
+local dragMoved = false
 
-    while pages < CONFIG.MaxPages do
-        local url = string.format(
-            "https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100&cursor=%s&minPlayers=%d&maxPlayers=%d",
-            PLACE_ID, cursor or "", minP, maxP
-        )
-
-        local data = requestUrl(url)
-        if not data then break end
-
-        local cnt = 0
-        for _, s in ipairs(data.data) do
-            cnt = cnt + 1
-            totalSeen = totalSeen + 1
-            local pc = tonumber(s.playing) or 0
-            local id = s.id
-            if type(id) == "string" and id ~= JOB_ID and not Blacklist[id] then
-                if pc >= minP and pc <= maxP then
-                    result[id] = {
-                        id = id,
-                        ping = tonumber(s.ping) or 999,
-                        fps = tonumber(s.fps) or 60,
-                        playing = pc,
-                        max = tonumber(s.maxPlayers) or 12,
-                    }
-                end
-            end
-        end
-
-        if cnt == 0 then break end
-
-        cursor = data.nextPageCursor
-        if not cursor or cursor == "" or cursor == "null" then break end
-        pages = pages + 1
-        task.wait(0.02)
+Btn.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        dragActive = true
+        dragMoved = false
+        dragStartInput = input.Position
+        dragStartPos = Container.Position
+        Btn.BackgroundColor3 = Color3.fromRGB(40, 140, 90)
     end
+end)
 
-    return result, totalSeen
-end
-
-local function scanWithoutFilter()
-    local result = {}
-    local cursor = ""
-    local pages = 0
-
-    while pages < CONFIG.MaxPages do
-        local url = string.format(
-            "https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100&cursor=%s",
-            PLACE_ID, cursor or ""
-        )
-
-        local data = requestUrl(url)
-        if not data then break end
-
-        local cnt = 0
-        for _, s in ipairs(data.data) do
-            cnt = cnt + 1
-            local pc = tonumber(s.playing) or 0
-            local id = s.id
-            if type(id) == "string" and id ~= JOB_ID and not Blacklist[id] then
-                if pc >= 1 and pc <= 2 then
-                    result[id] = {
-                        id = id,
-                        ping = tonumber(s.ping) or 999,
-                        fps = tonumber(s.fps) or 60,
-                        playing = pc,
-                        max = tonumber(s.maxPlayers) or 12,
-                    }
-                end
-            end
-        end
-
-        if cnt == 0 then break end
-
-        cursor = data.nextPageCursor
-        if not cursor or cursor == "" or cursor == "null" then break end
-        pages = pages + 1
-        task.wait(0.02)
+UserInputService.InputChanged:Connect(function(input)
+    if not dragActive then return end
+    if input.UserInputType ~= Enum.UserInputType.MouseMovement
+        and input.UserInputType ~= Enum.UserInputType.Touch then return end
+    local delta = input.Position - dragStartInput
+    if math.abs(delta.X) > 8 or math.abs(delta.Y) > 8 then
+        dragMoved = true
     end
-
-    return result
-end
-
-local function calculateScore(server)
-    local fpsScore = math.max(0, 60 - server.fps) * 2
-    local pingScore = math.min(server.ping, 500) / 4
-    local playerBonus = server.playing == 1 and 500 or 0
-    return playerBonus + fpsScore + pingScore
-end
-
-local function verifyServerLive(jobId)
-    if not http then return true end
-
-    local url = string.format(
-        "https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100&cursor=&minPlayers=1&maxPlayers=2",
-        PLACE_ID
+    Container.Position = UDim2.new(
+        dragStartPos.X.Scale,
+        dragStartPos.X.Offset + delta.X,
+        dragStartPos.Y.Scale,
+        dragStartPos.Y.Offset + delta.Y
     )
-    local data = requestUrl(url)
-    if not data then return true end
+end)
 
+UserInputService.InputEnded:Connect(function(input)
+    if not dragActive then return end
+    if input.UserInputType ~= Enum.UserInputType.MouseButton1
+        and input.UserInputType ~= Enum.UserInputType.Touch then return end
+    dragActive = false
+    Btn.BackgroundColor3 = Color3.fromRGB(60, 180, 120)
+    if not dragMoved then
+        task.spawn(function()
+            local ok = pcall(doHop)
+            if not ok then
+                stopLoading("Lỗi!", Color3.fromRGB(255, 100, 100))
+                IsScanning = false
+            end
+        end)
+    end
+end)
+
+local function requestPage(cursor)
+    if not http then return nil end
+    local url = string.format(
+        "https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100&cursor=%s",
+        PLACE_ID, cursor or ""
+    )
+    local ok, res = pcall(function()
+        return http({ Url = url, Method = "GET", Headers = { ["Accept"] = "application/json" } })
+    end)
+    if not ok or not res or not res.Body then return nil end
+    local ok2, data = pcall(function()
+        return HttpService:JSONDecode(res.Body)
+    end)
+    if not ok2 or not data then return nil end
+    return data
+end
+
+local function scanPass(maxPlayers, maxPages)
+    local result = {}
     local cursor = ""
     local pages = 0
-    local seenInFirstPage = false
+    local totalScanned = 0
 
-    while pages < 15 do:
-        if pages > 0 then
-            local url2 = string.format(
-                "https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100&cursor=%s",
-                PLACE_ID, cursor or ""
-            )
-            data = requestUrl(url2)
-            if not data then return true end
-        end
-
-        if type(data.data) == "table" then
-            for _, s in ipairs(data.data) do
-                if type(s) == "table" and s.id == jobId then
-                    local pc = tonumber(s.playing) or 0
-                    if pc >= 1 and pc <= 2 then
-                        return true
-                    end
-                    return false
+    while pages < maxPages do
+        local data = requestPage(cursor)
+        if not data or not data.data then break end
+        local cnt = 0
+        for _, s in ipairs(data.data) do
+            cnt = cnt + 1
+            totalScanned = totalScanned + 1
+            local pc = s.playing or 0
+            local id = s.id
+            if pc >= 1 and pc <= maxPlayers then
+                if id ~= JOB_ID and not Blacklist[id] then
+                    result[id] = {
+                        id = id,
+                        ping = s.ping or 999,
+                        fps = s.fps or 60,
+                        playing = pc,
+                        max = s.maxPlayers or 12
+                    }
                 end
             end
         end
-
+        if cnt == 0 then break end
         cursor = data.nextPageCursor
         if not cursor or cursor == "" or cursor == "null" then break end
         pages = pages + 1
+        task.wait(0.02)
     end
 
-    return true
+    return result, totalScanned
 end
 
-local function attemptTeleport(jobId)
-    local ok1 = pcall(function()
-        local opts = Instance.new("TeleportOptions")
-        opts.ServerInstanceId = jobId
-        TeleportService:TeleportAsync(PLACE_ID, {LocalPlayer}, opts)
-    end)
-    if ok1 then return true end
+local function calculateScore(server, stabilityBonus)
+    local playerScore = 0
+    if server.playing == 1 then
+        playerScore = 100
+    elseif server.playing == 2 then
+        playerScore = 40
+    elseif server.playing == 3 then
+        playerScore = 10
+    end
 
-    local ok2 = pcall(function()
-        TeleportService:TeleportToPlaceInstance(PLACE_ID, jobId, LocalPlayer)
-    end)
-    if ok2 then return true end
+    local fpsScore = math.max(0, 60 - server.fps) * 1.5
 
-    local ok3 = pcall(function()
-        TeleportService:TeleportToPlaceInstance(PLACE_ID, jobId)
-    end)
-    if ok3 then return true end
+    local pingScore = math.min(server.ping, 500) / 5
 
-    return false
+    local stabilityScore = stabilityBonus * 60
+
+    local total = playerScore + fpsScore + pingScore + stabilityScore
+    return total
 end
 
-local function postCheck(myGen)
-    task.wait(CONFIG.PostCheckDelay)
-    if myGen ~= PostCheckGen then return end
-    if IsHopping or IsScanning or TeleportPending then return end
+function doHop()
+    if IsScanning then return end
+    IsScanning = true
 
-    local count = #Players:GetPlayers()
-    if count > CONFIG.MaxTotalAllowed then
-        notify("Lỗi: server đông · bắt đầu dò lại", 3)
-        NeedHop = true
-    else
-        notify("OK · server " .. count .. " người", 3)
-    end
-end
+    startLoading("Đang dò server")
+    task.wait(0.1)
 
-local function findBestServer()
-    notify("Đang tìm server...", 3)
-
-    local servers = select(1, scanWithFilter(1, 1))
-
-    if next(servers) == nil then
-        notify("Không có 1 người · thử 1-2 người", 2)
-        servers = select(1, scanWithFilter(1, 2))
+    if not http then
+        IsScanning = false
+        stopLoading("Lỗi kết nối!", Color3.fromRGB(255, 100, 100))
+        return
     end
 
-    if next(servers) == nil then
-        notify("Không có filter · scan toàn bộ", 2)
-        servers = scanWithoutFilter()
+    local pass1 = select(1, scanPass(2, 12))
+
+    local count1 = 0
+    for _ in pairs(pass1) do count1 = count1 + 1 end
+
+    if count1 == 0 then
+        IsScanning = false
+        stopLoading("Không có server!", Color3.fromRGB(255, 100, 100))
+        return
     end
 
-    if next(servers) == nil then
-        return nil
+    startLoading("Đang phân tích")
+    task.wait(2.5)
+
+    local pass2 = select(1, scanPass(2, 12))
+
+    local stable = {}
+    for id, s in pairs(pass2) do
+        if pass1[id] then
+            s.stability = 2
+            if s.playing == pass1[id].playing then
+                s.stability = 3
+            end
+            table.insert(stable, s)
+        end
     end
 
-    local candidates = {}
-    for _, s in pairs(servers) do
-        s.score = calculateScore(s)
-        table.insert(candidates, s)
+    if #stable == 0 then
+        for id, s in pairs(pass1) do
+            s.stability = 1
+            table.insert(stable, s)
+        end
     end
 
-    table.sort(candidates, function(a, b)
+    startLoading("Đang xác nhận")
+    task.wait(1.5)
+
+    local finalPool = {}
+    for _, s in ipairs(stable) do
+        local total = calculateScore(s, s.stability)
+        s.score = total
+        table.insert(finalPool, s)
+    end
+
+    table.sort(finalPool, function(a, b)
         return a.score > b.score
     end)
 
     local onePlayer = {}
-    for _, s in ipairs(candidates) do
+    for _, s in ipairs(finalPool) do
         if s.playing == 1 then
             table.insert(onePlayer, s)
         end
     end
 
-    local pool = #onePlayer > 0 and onePlayer or candidates
-    local topCount = math.min(3, #pool)
-    return pool[math.random(1, topCount)]
-end
-
-function performHop()
-    if IsScanning or IsHopping then return false end
-
-    IsScanning = true
-    NeedHop = false
-
-    local target = findBestServer()
-
-    if not target then
-        IsScanning = false
-        notify("Lỗi: không có server · bắt đầu dò lại", 3)
-        task.wait(CONFIG.RetryDelay)
-        return false
+    local pickFrom = onePlayer
+    if #pickFrom == 0 then
+        pickFrom = finalPool
     end
 
-    notify("Vào server " .. target.playing .. " người · FPS" .. target.fps .. " · P" .. target.ping, 3)
+    local topCount = math.min(3, #pickFrom)
+    if topCount == 0 then
+        IsScanning = false
+        stopLoading("Không có server!", Color3.fromRGB(255, 100, 100))
+        return
+    end
 
-    task.wait(0.2)
+    local target = pickFrom[math.random(1, topCount)]
+
+    startLoading("Đang vào server")
+    task.wait(0.5)
 
     IsScanning = false
-    IsHopping = true
-    TeleportPending = true
-    Blacklist[target.id] = tick()
+    Blacklist[target.id] = true
 
-    local success = false
-    for attempt = 1, 2 do
-        if attemptTeleport(target.id) then
-            success = true
-            break
-        end
-        task.wait(1.5)
-    end
-
-    TeleportPending = false
-    IsHopping = false
-
-    if success then
-        PostCheckGen = PostCheckGen + 1
-        local myGen = PostCheckGen
-        task.spawn(function()
-            postCheck(myGen)
-        end)
-        return true
-    else
-        notify("Lỗi: vào fail · bắt đầu dò lại", 3)
-        task.wait(CONFIG.RetryDelay)
-        return false
-    end
-end
-
-local function triggerCountdown()
-    CountdownGen = CountdownGen + 1
-    local myGen = CountdownGen
-
-    task.spawn(function()
-        for i = CONFIG.AutoHopDelay, 1, -1 do
-            if myGen ~= CountdownGen then return end
-            if not AutoEnabled then return end
-            if IsHopping or IsScanning then return end
-
-            local cnt = #Players:GetPlayers()
-            if cnt <= CONFIG.MaxTotalAllowed then
-                NeedHop = false
-                return
-            end
-
-            task.wait(1)
-        end
-
-        if myGen ~= CountdownGen then return end
-        if IsHopping or IsScanning then return end
-        if #Players:GetPlayers() > CONFIG.MaxTotalAllowed then
-            NeedHop = true
-        end
+    local ok = pcall(function()
+        TeleportService:TeleportToPlaceInstance(PLACE_ID, target.id, LocalPlayer)
     end)
-end
 
-local function startMonitor()
-    if MonitorConn then MonitorConn:Disconnect() end
-    MonitorConn = RunService.Heartbeat:Connect(function()
-        if not AutoEnabled then return end
-        if IsHopping or IsScanning or TeleportPending then return end
-
-        local count = #Players:GetPlayers()
-        if count == LastPlayerCount then return end
-
-        local oldCount = LastPlayerCount
-        LastPlayerCount = count
-
-        if count > CONFIG.MaxTotalAllowed then
-            if oldCount <= CONFIG.MaxTotalAllowed then
-                notify("Phát hiện " .. count .. " người · sẽ hop", 3)
-            end
-            triggerCountdown()
-        else
-            if oldCount > CONFIG.MaxTotalAllowed then
-                CountdownGen = CountdownGen + 1
-                NeedHop = false
-            end
-        end
-    end)
-end
-
-task.spawn(function()
-    while true do
-        task.wait(1)
-        if not AutoEnabled then continue end
-        if IsHopping or IsScanning or TeleportPending then continue end
-
-        if #Players:GetPlayers() > CONFIG.MaxTotalAllowed then
-            NeedHop = true
-        end
-
-        if NeedHop then
-            performHop()
-        end
+    if not ok then
+        stopLoading("Lỗi! Bấm lại.", Color3.fromRGB(255, 100, 100))
     end
-end)
-
-LastPlayerCount = #Players:GetPlayers()
-startMonitor()
-
-notify("Script sẵn sàng", 4)
-
-task.spawn(function()
-    task.wait(2)
-    if #Players:GetPlayers() > CONFIG.MaxTotalAllowed then
-        NeedHop = true
-    end
-end)
+end
