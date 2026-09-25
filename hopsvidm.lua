@@ -1,4 +1,4 @@
-local VERSION = "PHANTOM v13.2.2"
+local VERSION = "PHANTOM v13.2.3"
 local SCRIPT_NAME = "PHANTOM ⚡"
 
 if not game:IsLoaded() then game.Loaded:Wait() end
@@ -130,9 +130,6 @@ end
 
 local function sortQueue()
     table.sort(Queue, function(a, b)
-        if a.Playing ~= b.Playing then
-            return a.Playing < b.Playing
-        end
         if a.Stability ~= b.Stability then
             return a.Stability > b.Stability
         end
@@ -140,35 +137,9 @@ local function sortQueue()
     end)
 end
 
-local function addToQueue(server)
-    if not server or not server.JobId or server.JobId == "" then return end
-    if server.JobId == game.JobId then return end
-    if isBlacklisted(server.JobId) then return end
-    if inQueue(server.JobId) then return end
-    if #Queue >= MAX_QUEUE then return end
-    table.insert(Queue, server)
-    sortQueue()
-end
-
 local function getScore(playerCount)
     if playerCount == 1 then return 1000 end
-    if playerCount == 2 then return 200 end
     return 0
-end
-
-local function hasOnePlayerCandidate()
-    for _, s in ipairs(Queue) do
-        if s.Playing == 1 then return true end
-    end
-    return false
-end
-
-local function countOnePlayer()
-    local c = 0
-    for _, s in ipairs(Queue) do
-        if s.Playing == 1 then c = c + 1 end
-    end
-    return c
 end
 
 local function fetchServers(cursor, sortOrder)
@@ -198,9 +169,8 @@ local function mergeServerToQueue(srv, passNum)
     local playing = safeNum(srv.playing, 0)
     local maxPlayers = safeNum(srv.maxPlayers, 0)
     if jobId == "" or jobId == game.JobId then return end
-    if playing ~= 1 and playing ~= 2 then return end
+    if playing ~= 1 then return end
     if isBlacklisted(jobId) then return end
-    if playing == 2 and countOnePlayer() >= 3 then return end
 
     while QueueLock do task.wait() end
     QueueLock = true
@@ -239,13 +209,8 @@ local function mergeServerToQueue(srv, passNum)
             Stability = 1,
             Passes = {[passNum] = true},
         }
-        local wasAdded = false
         if #Queue < MAX_QUEUE then
             table.insert(Queue, entry)
-            wasAdded = true
-        end
-        if wasAdded then
-            State.FoundCount = State.FoundCount + 1
         end
     end
 
@@ -335,7 +300,7 @@ local function scanServers()
         pcall(function() task.wait(t) end)
     end
 
-    task.wait(1)
+    task.wait(0.5)
 
     local elapsed = tick() - startTime
     local seenDelta = State.SeenCount - startSeen
@@ -345,33 +310,12 @@ local function scanServers()
 
     State.IsScanning = false
     sortQueue()
-    log("info", "Scan xong: " .. #Queue .. " queue, tốc độ " .. State.ScanSpeed .. " sv/s")
-end
-
-local function verifyServer(jobId)
-    local cursor = nil
-    local pages = 0
-    while pages < 10 do
-        local data, err = fetchServers(cursor, "Asc")
-        if not data then
-            log("warn", "Verify lỗi: " .. tostring(err))
-            return nil
+    for _, s in ipairs(Queue) do
+        if s.Stability >= 2 then
+            State.FoundCount = State.FoundCount + 1
         end
-        for _, srv in ipairs(data.data or {}) do
-            if safeStr(srv.id, "") == jobId then
-                local playing = safeNum(srv.playing, 0)
-                if playing == 1 then
-                    return true
-                else
-                    return false
-                end
-            end
-        end
-        cursor = data.nextPageCursor
-        if not cursor or cursor == "" then break end
-        pages = pages + 1
     end
-    return nil
+    log("info", "Scan xong: " .. #Queue .. " queue, tốc độ " .. State.ScanSpeed .. " sv/s")
 end
 
 local function teleportToServer(jobId)
@@ -399,24 +343,9 @@ local function hopToServer(server)
     if State.IsHopping then return false end
     State.IsHopping = true
     State.HopStart = tick()
-    State.Status = "Đang xác nhận..."
-    log("info", "Verify server " .. server.JobId)
-
-    local verify = verifyServer(server.JobId)
-    if verify == false then
-        log("warn", "Server đã đầy, blacklist")
-        addBlacklist(server.JobId)
-        State.IsHopping = false
-        return false
-    end
-    if verify == nil then
-        log("warn", "Không verify được, blacklist")
-        addBlacklist(server.JobId)
-        State.IsHopping = false
-        return false
-    end
-
     State.Status = "Đang tạo cổng kết nối..."
+    log("info", "Vào server " .. server.JobId .. " (" .. server.Stability .. " pass)")
+
     local ok = teleportToServer(server.JobId)
     if not ok then
         log("error", "Teleport fail")
@@ -433,7 +362,7 @@ local function hopToServer(server)
     end
 
     State.Status = "Đang vào..."
-    task.wait(3)
+    task.wait(2)
     State.IsHopping = false
     return true
 end
@@ -441,13 +370,8 @@ end
 local function findCandidate()
     sortQueue()
     for _, s in ipairs(Queue) do
-        if not isBlacklisted(s.JobId) then
-            if s.Playing == 1 then return s end
-        end
-    end
-    if not hasOnePlayerCandidate() then
-        for _, s in ipairs(Queue) do
-            if not isBlacklisted(s.JobId) then return s end
+        if s.Stability >= 2 and not isBlacklisted(s.JobId) then
+            return s
         end
     end
     return nil
@@ -461,7 +385,7 @@ local function tryHop()
     end
     local candidate = findCandidate()
     if not candidate then
-        State.Status = "Queue rỗng, scan lại"
+        State.Status = "Chưa có server cổ, scan lại"
         task.spawn(scanServers)
         return
     end
