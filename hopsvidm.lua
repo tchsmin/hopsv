@@ -19,7 +19,6 @@ local http = getHttp()
 
 local Blacklist = {}
 local IsRunning = true
-local IsHopping = false
 
 if CoreGui:FindFirstChild("PhantomUI") then CoreGui.PhantomUI:Destroy() end
 
@@ -191,10 +190,10 @@ local InfoRight = Instance.new("TextLabel")
 InfoRight.Size = UDim2.new(0.5, -8, 1, 0)
 InfoRight.Position = UDim2.new(0.5, 0, 0, 0)
 InfoRight.BackgroundTransparency = 1
-InfoRight.Text = "🎯 0"
+InfoRight.Text = "🎯 0/0"
 InfoRight.TextColor3 = Color3.fromRGB(255, 200, 120)
 InfoRight.Font = Enum.Font.GothamBold
-InfoRight.TextSize = 14
+InfoRight.TextSize = 12
 InfoRight.TextXAlignment = Enum.TextXAlignment.Right
 InfoRight.Parent = InfoCard
 
@@ -250,10 +249,15 @@ local function requestPage(cursor)
     return data
 end
 
+local Debug = { one = 0, two = 0, total = 0 }
+
 local function scanPass(maxPlayers, maxPages)
     local result = {}
     local cursor = ""
     local pages = 0
+    Debug.one = 0
+    Debug.two = 0
+    Debug.total = 0
 
     while pages < maxPages do
         local data = requestPage(cursor)
@@ -261,7 +265,11 @@ local function scanPass(maxPlayers, maxPages)
         local cnt = 0
         for _, s in ipairs(data.data) do
             cnt = cnt + 1
+            Debug.total = Debug.total + 1
             local pc = s.playing or 0
+            if pc == 1 then Debug.one = Debug.one + 1 end
+            if pc == 2 then Debug.two = Debug.two + 1 end
+
             local id = s.id
             if pc >= 1 and pc <= maxPlayers then
                 if id ~= JOB_ID and not Blacklist[id] then
@@ -281,6 +289,8 @@ local function scanPass(maxPlayers, maxPages)
         pages = pages + 1
         task.wait(0.02)
     end
+
+    InfoRight.Text = "🎯 " .. Debug.one .. "/" .. Debug.total
 
     return result
 end
@@ -325,22 +335,20 @@ local function doHop()
         return false
     end
 
-    local pass1 = scanPass(2, 12)
+    local pass1 = scanPass(2, 25)
 
     local count1 = 0
     for _ in pairs(pass1) do count1 = count1 + 1 end
 
+    setStatus("Pass 1: " .. count1 .. " · 1ng:" .. Debug.one, Color3.fromRGB(255, 200, 100))
+
     if count1 == 0 then
-        setStatus("Không có server!", Color3.fromRGB(255, 120, 120))
-        setPill("FAIL", Color3.fromRGB(255, 120, 120))
         return false
     end
 
-    InfoRight.Text = "🎯 " .. count1
-    setStatus("Đang phân tích...", Color3.fromRGB(255, 200, 100))
     task.wait(2.5)
 
-    local pass2 = scanPass(2, 12)
+    local pass2 = scanPass(2, 25)
 
     local stable = {}
     for id, s in pairs(pass2) do
@@ -360,7 +368,7 @@ local function doHop()
         end
     end
 
-    setStatus("Đang xác nhận...", Color3.fromRGB(255, 200, 100))
+    setStatus("Xác nhận...", Color3.fromRGB(255, 200, 100))
     task.wait(1.5)
 
     local pool = {}
@@ -387,14 +395,12 @@ local function doHop()
 
     local topCount = math.min(3, #pickFrom)
     if topCount == 0 then
-        setStatus("Không có server!", Color3.fromRGB(255, 120, 120))
-        setPill("FAIL", Color3.fromRGB(255, 120, 120))
         return false
     end
 
     local target = pickFrom[math.random(1, topCount)]
 
-    setStatus("Vào " .. target.playing .. " người · FPS" .. target.fps .. " P" .. target.ping, Color3.fromRGB(120, 255, 160))
+    setStatus("Vào " .. target.playing .. "ng · FPS" .. target.fps .. " P" .. target.ping, Color3.fromRGB(120, 255, 160))
     setPill("HOP", Color3.fromRGB(120, 255, 160))
 
     Blacklist[target.id] = true
@@ -404,7 +410,7 @@ local function doHop()
     local ok = fastTeleport(target.id)
 
     if not ok then
-        setStatus("Teleport fail · thử lại", Color3.fromRGB(255, 100, 100))
+        setStatus("Teleport fail", Color3.fromRGB(255, 100, 100))
         setPill("FAIL", Color3.fromRGB(255, 100, 100))
         return false
     end
@@ -419,7 +425,7 @@ local function mainLoop()
         local count = updatePlayerCount()
 
         if count <= 2 then
-            setStatus("Server " .. count .. " người · chờ", Color3.fromRGB(120, 255, 160))
+            setStatus("Server " .. count .. " ng · chờ", Color3.fromRGB(120, 255, 160))
             setPill("ON", Color3.fromRGB(60, 220, 120))
 
             for _ = 1, 30 do
@@ -439,11 +445,11 @@ local function mainLoop()
             if not ScreenGui.Parent then return end
             local cnt = #Players:GetPlayers()
             if cnt <= 2 then
-                setStatus("Người rời · hủy hop", Color3.fromRGB(120, 255, 160))
+                setStatus("Người rời · hủy", Color3.fromRGB(120, 255, 160))
                 setPill("ON", Color3.fromRGB(60, 220, 120))
                 break
             end
-            setStatus("Hop sau " .. i .. "s · " .. cnt .. " người", Color3.fromRGB(255, 200, 100))
+            setStatus("Hop sau " .. i .. "s · " .. cnt .. "ng", Color3.fromRGB(255, 200, 100))
             setPill("WAIT", Color3.fromRGB(255, 180, 100))
             task.wait(1)
         end
@@ -452,7 +458,6 @@ local function mainLoop()
             continue
         end
 
-        IsHopping = true
         local hopped = false
 
         while not hopped and ScreenGui.Parent do
@@ -463,13 +468,11 @@ local function mainLoop()
                 task.wait(3)
             else
                 Blacklist = {}
-                setStatus("Thử lại sau 2s...", Color3.fromRGB(255, 150, 100))
+                setStatus("Không có · thử lại", Color3.fromRGB(255, 150, 100))
                 setPill("WAIT", Color3.fromRGB(255, 180, 100))
                 task.wait(2)
             end
         end
-
-        IsHopping = false
     end
 end
 
