@@ -1,423 +1,562 @@
+repeat task.wait() until game:IsLoaded()
+
 local Players = game:GetService("Players")
 local TeleportService = game:GetService("TeleportService")
+local CoreGui = game:GetService("CoreGui")
 local HttpService = game:GetService("HttpService")
-local RunService = game:GetService("RunService")
 
 local LocalPlayer = Players.LocalPlayer
-local PLACE_ID = game.PlaceId
-local JOB_ID = game.JobId
+local PLACE_ID = 107778070777162
 
-local function notify(text, duration)
-    pcall(function()
-        game:GetService("StarterGui"):SetCore("SendNotification", {
-            Title = "HOP SERVER",
-            Text = tostring(text),
-            Duration = duration or 4
-        })
-    end)
-end
+local CONFIG = {
+    TargetPlayersPrimary = 1,
+    TargetPlayersFallback = 2,
+    SwitchAtPlayers = 3,
+    Countdown = 3,
+    ScanDelay = 1.5,
+    MonitorDelay = 1,
+    TeleportTimeout = 12,
+    RetryDelay = 2.5,
+    MaxPages = 7,
+    ServersPerPage = 100,
+    PreferLowFPS = true,
+    PreferHighPing = true,
+    AvoidCurrentServer = true,
+    RequireSpeedCheck = true,
+}
 
-local function getHttp()
-    if syn and syn.request then return syn.request end
-    if http_request then return http_request end
-    if request then return request end
-    if fluxus and fluxus.request then return fluxus.request end
-    if krnl and krnl.request then return krnl.request end
-    if http and http.request then return http.request end
-    return nil
-end
-local http = getHttp()
-
-if not http then
-    notify("Lỗi: không có HTTP")
+if game.PlaceId ~= PLACE_ID then
     return
 end
 
-local CONFIG = {
-    MaxPages = 30,
-    RetryDelay = 4,
-    AutoHopDelay = 3,
-    MaxTotalAllowed = 2,
-    PostCheckDelay = 4,
-    RequestRetries = 3,
-    VerifyRetries = 2,
-}
+local function Notify(message)
+    pcall(function()
+        local gui = CoreGui:FindFirstChild("SAE_AutoServerNotify")
 
-local Blacklist = {}
-local IsScanning = false
-local IsHopping = false
-local AutoEnabled = true
-local MonitorConn = nil
-local LastPlayerCount = 0
-local TeleportPending = false
-local NeedHop = false
-local CountdownGen = 0
-local PostCheckGen = 0
-
-local function requestUrl(url)
-    if not http then return nil end
-    for attempt = 1, CONFIG.RequestRetries do
-        local ok, res = pcall(function()
-            return http({ Url = url, Method = "GET" })
-        end)
-        if ok and res then
-            local body = res.Body or res.body
-            if type(body) == "string" and #body > 0 then
-                local ok2, data = pcall(function()
-                    return HttpService:JSONDecode(body)
-                end)
-                if ok2 and type(data) == "table" and type(data.data) == "table" then
-                    return data
-                end
-            end
+        if not gui then
+            gui = Instance.new("ScreenGui")
+            gui.Name = "SAE_AutoServerNotify"
+            gui.ResetOnSpawn = false
+            gui.IgnoreGuiInset = true
+            gui.Parent = CoreGui
         end
-        task.wait(0.25)
+
+        local old = gui:FindFirstChild("Message")
+        if old then
+            old:Destroy()
+        end
+
+        local label = Instance.new("TextLabel")
+        label.Name = "Message"
+        label.Size = UDim2.fromOffset(430, 40)
+        label.Position = UDim2.new(0.5, -215, 0, 20)
+        label.BackgroundTransparency = 0.15
+        label.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+        label.BorderSizePixel = 0
+        label.TextColor3 = Color3.new(1, 1, 1)
+        label.TextSize = 16
+        label.Font = Enum.Font.GothamMedium
+        label.Text = message
+        label.Parent = gui
+
+        task.delay(2.2, function()
+            if label and label.Parent then
+                label:Destroy()
+            end
+        end)
+    end)
+
+    print("[SAE]", message)
+end
+
+local function HttpGet(url)
+    local funcs = {
+        function()
+            return game:HttpGet(url)
+        end,
+        function()
+            return request({
+                Url = url,
+                Method = "GET"
+            }).Body
+        end,
+        function()
+            return http_request({
+                Url = url,
+                Method = "GET"
+            }).Body
+        end,
+        function()
+            return syn and syn.request({
+                Url = url,
+                Method = "GET"
+            }).Body
+        end,
+    }
+
+    for _, fn in ipairs(funcs) do
+        local ok, result = pcall(fn)
+        if ok and type(result) == "string" and #result > 0 then
+            return result
+        end
     end
+
     return nil
 end
 
-local function scanWithFilter(minP, maxP)
-    local result = {}
-    local cursor = ""
-    local pages = 0
-    local totalSeen = 0
+local function DecodeJSON(raw)
+    if not raw then
+        return nil
+    end
 
-    while pages < CONFIG.MaxPages do
-        local url = string.format(
-            "https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100&cursor=%s&minPlayers=%d&maxPlayers=%d",
-            PLACE_ID, cursor or "", minP, maxP
-        )
+    local ok, result = pcall(function()
+        return HttpService:JSONDecode(raw)
+    end)
 
-        local data = requestUrl(url)
-        if not data then break end
+    if ok then
+        return result
+    end
 
-        local cnt = 0
-        for _, s in ipairs(data.data) do
-            cnt = cnt + 1
-            totalSeen = totalSeen + 1
-            local pc = tonumber(s.playing) or 0
-            local id = s.id
-            if type(id) == "string" and id ~= JOB_ID and not Blacklist[id] then
-                if pc >= minP and pc <= maxP then
-                    result[id] = {
+    return nil
+end
+
+local SPEED_NAMES = {
+    "Speed",
+    "SpeedPower",
+    "Speed Power",
+    "MovementSpeed",
+    "MoveSpeed",
+}
+
+local function NumberFromObject(obj)
+    if not obj then
+        return nil
+    end
+
+    if obj:IsA("IntValue") or obj:IsA("NumberValue") then
+        return tonumber(obj.Value)
+    end
+
+    if obj:IsA("StringValue") then
+        return tonumber(obj.Value)
+    end
+
+    return nil
+end
+
+local function FindSpeedRecursive(root, depth)
+    if not root or depth > 4 then
+        return nil
+    end
+
+    for _, child in ipairs(root:GetChildren()) do
+        local name = child.Name:lower()
+
+        for _, wanted in ipairs(SPEED_NAMES) do
+            if name == wanted:lower() then
+                local value = NumberFromObject(child)
+                if value then
+                    return value
+                end
+            end
+        end
+    end
+
+    for _, child in ipairs(root:GetChildren()) do
+        local result = FindSpeedRecursive(child, depth + 1)
+        if result ~= nil then
+            return result
+        end
+    end
+
+    return nil
+end
+
+local function GetPlayerSpeed(player)
+    local speed = FindSpeedRecursive(player, 0)
+
+    if speed ~= nil then
+        return speed
+    end
+
+    for _, wanted in ipairs(SPEED_NAMES) do
+        local value = player:GetAttribute(wanted)
+
+        if typeof(value) == "number" then
+            return value
+        end
+    end
+
+    local character = player.Character
+
+    if character then
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+
+        if humanoid then
+            return tonumber(humanoid.WalkSpeed)
+        end
+    end
+
+    return nil
+end
+
+local function IsLocalPlayerTopSpeed()
+    local mySpeed = GetPlayerSpeed(LocalPlayer)
+
+    if mySpeed == nil then
+        return nil
+    end
+
+    local highest = mySpeed
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer then
+            local speed = GetPlayerSpeed(player)
+
+            if speed and speed > highest then
+                highest = speed
+            end
+        end
+    end
+
+    return mySpeed >= highest
+end
+
+local function GetServers()
+    local servers = {}
+    local cursor = nil
+
+    for _ = 1, CONFIG.MaxPages do
+        local url =
+            "https://games.roblox.com/v1/games/"
+            .. PLACE_ID
+            .. "/servers/Public?sortOrder=2&excludeFullGames=true&limit="
+            .. CONFIG.ServersPerPage
+
+        if cursor and cursor ~= "" then
+            url = url .. "&cursor=" .. HttpService:UrlEncode(cursor)
+        end
+
+        local raw = HttpGet(url)
+        local decoded = DecodeJSON(raw)
+
+        if not decoded or type(decoded.data) ~= "table" then
+            break
+        end
+
+        for _, server in ipairs(decoded.data) do
+            local id = tostring(server.id or "")
+            local playing = tonumber(server.playing) or 0
+            local maxPlayers = tonumber(server.maxPlayers) or 0
+            local fps = tonumber(server.fps)
+            local ping = tonumber(server.ping)
+
+            if id ~= "" and maxPlayers > playing then
+                if not CONFIG.AvoidCurrentServer or id ~= game.JobId then
+                    table.insert(servers, {
                         id = id,
-                        ping = tonumber(s.ping) or 999,
-                        fps = tonumber(s.fps) or 60,
-                        playing = pc,
-                        max = tonumber(s.maxPlayers) or 12,
-                    }
+                        playing = playing,
+                        maxPlayers = maxPlayers,
+                        fps = fps,
+                        ping = ping
+                    })
                 end
             end
         end
 
-        if cnt == 0 then break end
+        cursor = decoded.nextPageCursor
 
-        cursor = data.nextPageCursor
-        if not cursor or cursor == "" or cursor == "null" then break end
-        pages = pages + 1
-        task.wait(0.02)
-    end
-
-    return result, totalSeen
-end
-
-local function scanWithoutFilter()
-    local result = {}
-    local cursor = ""
-    local pages = 0
-
-    while pages < CONFIG.MaxPages do
-        local url = string.format(
-            "https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100&cursor=%s",
-            PLACE_ID, cursor or ""
-        )
-
-        local data = requestUrl(url)
-        if not data then break end
-
-        local cnt = 0
-        for _, s in ipairs(data.data) do
-            cnt = cnt + 1
-            local pc = tonumber(s.playing) or 0
-            local id = s.id
-            if type(id) == "string" and id ~= JOB_ID and not Blacklist[id] then
-                if pc >= 1 and pc <= 2 then
-                    result[id] = {
-                        id = id,
-                        ping = tonumber(s.ping) or 999,
-                        fps = tonumber(s.fps) or 60,
-                        playing = pc,
-                        max = tonumber(s.maxPlayers) or 12,
-                    }
-                end
-            end
+        if not cursor then
+            break
         end
 
-        if cnt == 0 then break end
-
-        cursor = data.nextPageCursor
-        if not cursor or cursor == "" or cursor == "null" then break end
-        pages = pages + 1
-        task.wait(0.02)
+        task.wait(0.1)
     end
 
-    return result
+    return servers
 end
 
-local function calculateScore(server)
-    local fpsScore = math.max(0, 60 - server.fps) * 2
-    local pingScore = math.min(server.ping, 500) / 4
-    local playerBonus = server.playing == 1 and 500 or 0
-    return playerBonus + fpsScore + pingScore
+local function ScoreServer(server)
+    local score = 0
+
+    if server.playing == CONFIG.TargetPlayersPrimary then
+        score += 100000
+    elseif server.playing == CONFIG.TargetPlayersFallback then
+        score += 50000
+    else
+        score -= server.playing * 1000
+    end
+
+    if CONFIG.PreferLowFPS and server.fps then
+        score += math.max(0, 100 - server.fps) * 10
+    end
+
+    if CONFIG.PreferHighPing and server.ping then
+        score += math.min(server.ping, 1000)
+    end
+
+    local freeSlots = server.maxPlayers - server.playing
+
+    if freeSlots > 0 then
+        score += math.max(0, 20 - freeSlots)
+    end
+
+    return score
 end
 
-local function verifyServerLive(jobId)
-    if not http then return true end
+local function SortServers(servers)
+    table.sort(servers, function(a, b)
+        local sa = ScoreServer(a)
+        local sb = ScoreServer(b)
 
-    local url = string.format(
-        "https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100&cursor=&minPlayers=1&maxPlayers=2",
-        PLACE_ID
-    )
-    local data = requestUrl(url)
-    if not data then return true end
+        if sa ~= sb then
+            return sa > sb
+        end
 
-    local cursor = ""
-    local pages = 0
-    local seenInFirstPage = false
+        if a.playing ~= b.playing then
+            return a.playing < b.playing
+        end
 
-    while pages < 15 do:
-        if pages > 0 then
-            local url2 = string.format(
-                "https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100&cursor=%s",
-                PLACE_ID, cursor or ""
+        return tostring(a.id) < tostring(b.id)
+    end)
+
+    return servers
+end
+
+local function FindBestServer()
+    Notify("ĐANG TÌM SERVER...")
+
+    local servers = GetServers()
+
+    if #servers == 0 then
+        return nil
+    end
+
+    local onePlayer = {}
+
+    for _, server in ipairs(servers) do
+        if server.playing == CONFIG.TargetPlayersPrimary then
+            table.insert(onePlayer, server)
+        end
+    end
+
+    if #onePlayer > 0 then
+        SortServers(onePlayer)
+        return onePlayer[1]
+    end
+
+    local twoPlayers = {}
+
+    for _, server in ipairs(servers) do
+        if server.playing == CONFIG.TargetPlayersFallback then
+            table.insert(twoPlayers, server)
+        end
+    end
+
+    if #twoPlayers > 0 then
+        SortServers(twoPlayers)
+        return twoPlayers[1]
+    end
+
+    return nil
+end
+
+local teleporting = false
+
+local function TeleportToServer(server)
+    if not server or not server.id or teleporting then
+        return false
+    end
+
+    teleporting = true
+
+    Notify("ĐÃ CHỌN SERVER " .. server.playing .. " NGƯỜI")
+
+    local success = false
+
+    for attempt = 1, 3 do
+        local ok = pcall(function()
+            TeleportService:TeleportToPlaceInstance(
+                PLACE_ID,
+                server.id,
+                LocalPlayer
             )
-            data = requestUrl(url2)
-            if not data then return true end
+        end)
+
+        if ok then
+            success = true
+            break
         end
 
-        if type(data.data) == "table" then
-            for _, s in ipairs(data.data) do
-                if type(s) == "table" and s.id == jobId then
-                    local pc = tonumber(s.playing) or 0
-                    if pc >= 1 and pc <= 2 then
-                        return true
-                    end
-                    return false
-                end
-            end
-        end
+        Notify("LỖI TELEPORT - THỬ LẠI " .. attempt .. "/3")
+        task.wait(CONFIG.RetryDelay)
+    end
 
-        cursor = data.nextPageCursor
-        if not cursor or cursor == "" or cursor == "null" then break end
-        pages = pages + 1
+    if not success then
+        teleporting = false
+        return false
     end
 
     return true
 end
 
-local function attemptTeleport(jobId)
-    local ok1 = pcall(function()
-        local opts = Instance.new("TeleportOptions")
-        opts.ServerInstanceId = jobId
-        TeleportService:TeleportAsync(PLACE_ID, {LocalPlayer}, opts)
-    end)
-    if ok1 then return true end
+local function WaitForArrival(oldJobId)
+    local started = os.clock()
 
-    local ok2 = pcall(function()
-        TeleportService:TeleportToPlaceInstance(PLACE_ID, jobId, LocalPlayer)
-    end)
-    if ok2 then return true end
+    while os.clock() - started < CONFIG.TeleportTimeout do
+        task.wait(0.5)
 
-    local ok3 = pcall(function()
-        TeleportService:TeleportToPlaceInstance(PLACE_ID, jobId)
-    end)
-    if ok3 then return true end
+        if game.JobId ~= oldJobId then
+            return true
+        end
+    end
 
     return false
 end
 
-local function postCheck(myGen)
-    task.wait(CONFIG.PostCheckDelay)
-    if myGen ~= PostCheckGen then return end
-    if IsHopping or IsScanning or TeleportPending then return end
+local function Countdown()
+    for i = CONFIG.Countdown, 1, -1 do
+        if #Players:GetPlayers() >= CONFIG.SwitchAtPlayers then
+            Notify("SERVER " .. #Players:GetPlayers() .. " NGƯỜI - CHUYỂN " .. i)
+        else
+            return false
+        end
 
-    local count = #Players:GetPlayers()
-    if count > CONFIG.MaxTotalAllowed then
-        notify("Lỗi: server đông · bắt đầu dò lại", 3)
-        NeedHop = true
-    else
-        notify("OK · server " .. count .. " người", 3)
-    end
-end
+        task.wait(1)
 
-local function findBestServer()
-    notify("Đang tìm server...", 3)
-
-    local servers = select(1, scanWithFilter(1, 1))
-
-    if next(servers) == nil then
-        notify("Không có 1 người · thử 1-2 người", 2)
-        servers = select(1, scanWithFilter(1, 2))
-    end
-
-    if next(servers) == nil then
-        notify("Không có filter · scan toàn bộ", 2)
-        servers = scanWithoutFilter()
-    end
-
-    if next(servers) == nil then
-        return nil
-    end
-
-    local candidates = {}
-    for _, s in pairs(servers) do
-        s.score = calculateScore(s)
-        table.insert(candidates, s)
-    end
-
-    table.sort(candidates, function(a, b)
-        return a.score > b.score
-    end)
-
-    local onePlayer = {}
-    for _, s in ipairs(candidates) do
-        if s.playing == 1 then
-            table.insert(onePlayer, s)
+        if #Players:GetPlayers() <= CONFIG.TargetPlayersFallback then
+            Notify("SERVER GIẢM NGƯỜI - HỦY CHUYỂN")
+            return false
         end
     end
 
-    local pool = #onePlayer > 0 and onePlayer or candidates
-    local topCount = math.min(3, #pool)
-    return pool[math.random(1, topCount)]
+    return true
 end
 
-function performHop()
-    if IsScanning or IsHopping then return false end
+local function InitialJoin()
+    local count = #Players:GetPlayers()
 
-    IsScanning = true
-    NeedHop = false
+    if count <= CONFIG.TargetPlayersFallback then
+        Notify("SẴN SÀNG - SERVER " .. count .. " NGƯỜI")
+        return true
+    end
 
-    local target = findBestServer()
+    local server = FindBestServer()
 
-    if not target then
-        IsScanning = false
-        notify("Lỗi: không có server · bắt đầu dò lại", 3)
-        task.wait(CONFIG.RetryDelay)
+    if not server then
+        Notify("LỖI - KHÔNG TÌM THẤY SERVER PHÙ HỢP")
         return false
     end
 
-    notify("Vào server " .. target.playing .. " người · FPS" .. target.fps .. " · P" .. target.ping, 3)
+    local oldJob = game.JobId
 
-    task.wait(0.2)
+    if not TeleportToServer(server) then
+        return false
+    end
 
-    IsScanning = false
-    IsHopping = true
-    TeleportPending = true
-    Blacklist[target.id] = tick()
+    WaitForArrival(oldJob)
 
-    local success = false
-    for attempt = 1, 2 do
-        if attemptTeleport(target.id) then
-            success = true
+    return true
+end
+
+local function Monitor()
+    Notify("ĐÃ VÀO SERVER - ĐANG THEO DÕI")
+
+    while task.wait(CONFIG.MonitorDelay) do
+        if game.PlaceId ~= PLACE_ID then
+            return
+        end
+
+        local playerCount = #Players:GetPlayers()
+
+        if playerCount <= CONFIG.TargetPlayersFallback then
+            continue
+        end
+
+        if playerCount >= CONFIG.SwitchAtPlayers then
+            local topSpeed = IsLocalPlayerTopSpeed()
+
+            if topSpeed == true then
+                Notify("TOP 1 TỐC ĐỘ - GIỮ SERVER")
+                continue
+            end
+
+            if topSpeed == nil and CONFIG.RequireSpeedCheck then
+                Notify("CHƯA ĐỌC ĐƯỢC SPEED - GIỮ SERVER")
+                task.wait(2)
+                continue
+            end
+
+            local shouldSwitch = Countdown()
+
+            if not shouldSwitch then
+                continue
+            end
+
+            if #Players:GetPlayers() <= CONFIG.TargetPlayersFallback then
+                continue
+            end
+
+            local finalTopCheck = IsLocalPlayerTopSpeed()
+
+            if finalTopCheck == true then
+                Notify("ĐÃ LÊN TOP 1 - HỦY CHUYỂN")
+                continue
+            end
+
+            local server = FindBestServer()
+
+            if server then
+                local oldJobId = game.JobId
+
+                Notify("ĐANG CHUYỂN SERVER...")
+
+                if TeleportToServer(server) then
+                    local arrived = WaitForArrival(oldJobId)
+
+                    if not arrived then
+                        teleporting = false
+                        Notify("TELEPORT TIMEOUT - TÌM LẠI")
+                    end
+                else
+                    Notify("TELEPORT LỖI - TÌM SERVER KHÁC")
+                end
+            else
+                Notify("CHƯA CÓ SERVER 1/2 NGƯỜI - TIẾP TỤC TÌM")
+            end
+
+            teleporting = false
+        end
+    end
+end
+
+local function Start()
+    Notify("SẴN SÀNG")
+
+    while true do
+        local ok = pcall(function()
+            InitialJoin()
+        end)
+
+        if ok then
             break
         end
-        task.wait(1.5)
-    end
 
-    TeleportPending = false
-    IsHopping = false
-
-    if success then
-        PostCheckGen = PostCheckGen + 1
-        local myGen = PostCheckGen
-        task.spawn(function()
-            postCheck(myGen)
-        end)
-        return true
-    else
-        notify("Lỗi: vào fail · bắt đầu dò lại", 3)
+        Notify("LỖI - ĐANG THỬ LẠI...")
         task.wait(CONFIG.RetryDelay)
-        return false
     end
-end
 
-local function triggerCountdown()
-    CountdownGen = CountdownGen + 1
-    local myGen = CountdownGen
+    teleporting = false
 
-    task.spawn(function()
-        for i = CONFIG.AutoHopDelay, 1, -1 do
-            if myGen ~= CountdownGen then return end
-            if not AutoEnabled then return end
-            if IsHopping or IsScanning then return end
-
-            local cnt = #Players:GetPlayers()
-            if cnt <= CONFIG.MaxTotalAllowed then
-                NeedHop = false
-                return
-            end
-
-            task.wait(1)
-        end
-
-        if myGen ~= CountdownGen then return end
-        if IsHopping or IsScanning then return end
-        if #Players:GetPlayers() > CONFIG.MaxTotalAllowed then
-            NeedHop = true
-        end
-    end)
-end
-
-local function startMonitor()
-    if MonitorConn then MonitorConn:Disconnect() end
-    MonitorConn = RunService.Heartbeat:Connect(function()
-        if not AutoEnabled then return end
-        if IsHopping or IsScanning or TeleportPending then return end
-
-        local count = #Players:GetPlayers()
-        if count == LastPlayerCount then return end
-
-        local oldCount = LastPlayerCount
-        LastPlayerCount = count
-
-        if count > CONFIG.MaxTotalAllowed then
-            if oldCount <= CONFIG.MaxTotalAllowed then
-                notify("Phát hiện " .. count .. " người · sẽ hop", 3)
-            end
-            triggerCountdown()
-        else
-            if oldCount > CONFIG.MaxTotalAllowed then
-                CountdownGen = CountdownGen + 1
-                NeedHop = false
-            end
-        end
-    end)
-end
-
-task.spawn(function()
     while true do
-        task.wait(1)
-        if not AutoEnabled then continue end
-        if IsHopping or IsScanning or TeleportPending then continue end
+        local ok = pcall(Monitor)
 
-        if #Players:GetPlayers() > CONFIG.MaxTotalAllowed then
-            NeedHop = true
-        end
-
-        if NeedHop then
-            performHop()
+        if not ok then
+            teleporting = false
+            Notify("LỖI GIÁM SÁT - ĐANG KHÔI PHỤC...")
+            task.wait(CONFIG.RetryDelay)
         end
     end
-end)
+end
 
-LastPlayerCount = #Players:GetPlayers()
-startMonitor()
-
-notify("Script sẵn sàng", 4)
-
-task.spawn(function()
-    task.wait(2)
-    if #Players:GetPlayers() > CONFIG.MaxTotalAllowed then
-        NeedHop = true
-    end
-end)
+task.spawn(Start)
