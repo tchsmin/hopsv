@@ -34,16 +34,16 @@ if not http then
 end
 
 local CONFIG = {
-    MaxTotalAllowed = 2,
-    AutoHopDelay = 3,
-    PostCheckDelay = 4,
     RetryDelay = 5,
+    PostCheckDelay = 4,
     ScanPages = 15,
     PassDelay = 2,
     ConfirmDelay = 1,
     BlacklistTTL = 90,
     MaxBlacklist = 200,
     RequestRetries = 3,
+    LeaderboardCheckDelay = 6,
+    LeaderboardRefreshWait = 8,
 }
 
 local State = {
@@ -52,13 +52,16 @@ local State = {
     IsHopping = false,
     AutoEnabled = true,
     MonitorConn = nil,
+    LeaderboardConn = nil,
     LastPlayerCount = 0,
     TeleportPending = false,
     NeedHop = false,
-    CountdownGen = 0,
     PostCheckGen = 0,
     FailCount = 0,
     LoopRunning = false,
+    LastLeaderboardCheck = 0,
+    PlayerRank = nil,
+    IsTopOne = false,
 }
 
 local function cleanBlacklist()
@@ -180,9 +183,7 @@ local function findServer()
     local count1 = 0
     for _ in pairs(pass1) do count1 = count1 + 1 end
 
-    if count1 == 0 then
-        return nil
-    end
+    if count1 == 0 then return nil end
 
     task.wait(CONFIG.PassDelay)
 
@@ -206,9 +207,7 @@ local function findServer()
         end
     end
 
-    if #stable == 0 then
-        return nil
-    end
+    if #stable == 0 then return nil end
 
     task.wait(CONFIG.ConfirmDelay)
 
@@ -234,12 +233,48 @@ local function findServer()
         pickFrom = finalPool
     end
 
-    if #pickFrom == 0 then
-        return nil
-    end
+    if #pickFrom == 0 then return nil end
 
     local topCount = math.min(3, #pickFrom)
     return pickFrom[math.random(1, topCount)]
+end
+
+local function checkTopOneInLeaderboard()
+    local found = false
+    local myRank = nil
+
+    local function scanGui(gui)
+        for _, obj in ipairs(gui:GetDescendants()) do
+            if obj:IsA("GuiObject") and obj.Visible then
+                pcall(function()
+                    if obj:IsA("TextLabel") or obj:IsA("TextButton") then
+                        local text = obj.Text
+                        if type(text) == "string" and text:find(LocalPlayer.Name) then
+                            found = true
+                        end
+                    end
+                end)
+            end
+        end
+    end
+
+    pcall(function()
+        local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
+        if playerGui then scanGui(playerGui) end
+    end)
+
+    pcall(function()
+        local coreGui = game:GetService("CoreGui")
+        if coreGui then
+            for _, gui in ipairs(coreGui:GetChildren()) do
+                if gui:IsA("ScreenGui") or gui:IsA("Folder") then
+                    scanGui(gui)
+                end
+            end
+        end
+    end)
+
+    return found
 end
 
 local function postCheck(myGen)
@@ -248,13 +283,27 @@ local function postCheck(myGen)
     if State.IsHopping or State.IsScanning or State.TeleportPending then return end
 
     local count = #Players:GetPlayers()
-    if count > CONFIG.MaxTotalAllowed then
-        notify("Server đông · dò lại", 3)
+    if count > 2 then
+        notify("Server " .. count .. " người · dò lại", 3)
         State.NeedHop = true
-    else
-        notify("OK · server " .. count .. " người", 3)
+        return
+    end
+
+    task.wait(CONFIG.LeaderboardRefreshWait)
+
+    if myGen ~= State.PostCheckGen then return end
+
+    local isTop = checkTopOneInLeaderboard()
+
+    if isTop then
+        State.IsTopOne = true
         State.NeedHop = false
         State.FailCount = 0
+        notify("OK · top 1 speed", 4)
+    else
+        State.IsTopOne = false
+        notify("Không top 1 speed · dò lại", 4)
+        State.NeedHop = true
     end
 end
 
@@ -265,13 +314,14 @@ local function performHop()
 
     State.IsScanning = true
     State.NeedHop = false
+    State.IsTopOne = false
 
     local target = findServer()
 
     if not target then
         State.IsScanning = false
         State.FailCount = State.FailCount + 1
-        notify("Không có server · thử lại sau " .. CONFIG.RetryDelay .. "s", 3)
+        notify("Không có server · thử lại " .. CONFIG.RetryDelay .. "s", 3)
         task.wait(CONFIG.RetryDelay)
         return false
     end
@@ -312,34 +362,36 @@ local function performHop()
     end
 end
 
-local function triggerCountdown()
-    State.CountdownGen = State.CountdownGen + 1
-    local myGen = State.CountdownGen
+local function startLeaderboardMonitor()
+    if State.LeaderboardConn then State.LeaderboardConn:Disconnect() end
 
-    task.spawn(function()
-        for i = CONFIG.AutoHopDelay, 1, -1 do
-            if myGen ~= State.CountdownGen then return end
-            if not State.AutoEnabled then return end
-            if State.IsHopping or State.IsScanning then return end
+    State.LeaderboardConn = RunService.Heartbeat:Connect(function()
+        if not State.AutoEnabled then return end
+        if State.IsHopping or State.IsScanning or State.TeleportPending then return end
 
-            local cnt = #Players:GetPlayers()
-            if cnt <= CONFIG.MaxTotalAllowed then
-                State.NeedHop = false
-                return
+        local now = tick()
+        if now - State.LastLeaderboardCheck < CONFIG.LeaderboardCheckDelay then return end
+        State.LastLeaderboardCheck = now
+
+        if #Players:GetPlayers() <= 2 then
+            local isTop = checkTopOneInLeaderboard()
+            if isTop then
+                if not State.IsTopOne then
+                    State.IsTopOne = true
+                    notify("OK · top 1 speed", 3)
+                end
+            else
+                if State.IsTopOne then
+                    State.IsTopOne = false
+                end
+                notify("Không top 1 speed · dò lại", 3)
+                State.NeedHop = true
             end
-
-            task.wait(1)
-        end
-
-        if myGen ~= State.CountdownGen then return end
-        if State.IsHopping or State.IsScanning then return end
-        if #Players:GetPlayers() > CONFIG.MaxTotalAllowed then
-            State.NeedHop = true
         end
     end)
 end
 
-local function startMonitor()
+local function startPlayerMonitor()
     if State.MonitorConn then State.MonitorConn:Disconnect() end
     State.MonitorConn = RunService.Heartbeat:Connect(function()
         if not State.AutoEnabled then return end
@@ -351,16 +403,11 @@ local function startMonitor()
         local oldCount = State.LastPlayerCount
         State.LastPlayerCount = count
 
-        if count > CONFIG.MaxTotalAllowed then
-            if oldCount <= CONFIG.MaxTotalAllowed then
-                notify("Phát hiện " .. count .. " người · sẽ hop", 3)
+        if count > 2 then
+            if oldCount <= 2 then
+                notify("Có " .. count .. " người · sẽ hop", 3)
             end
-            triggerCountdown()
-        else
-            if oldCount > CONFIG.MaxTotalAllowed then
-                State.CountdownGen = State.CountdownGen + 1
-                State.NeedHop = false
-            end
+            State.NeedHop = true
         end
     end)
 end
@@ -372,15 +419,8 @@ local function startMainLoop()
     task.spawn(function()
         while true do
             task.wait(1)
-
             if not State.AutoEnabled then continue end
             if State.IsHopping or State.IsScanning or State.TeleportPending then continue end
-
-            local count = #Players:GetPlayers()
-
-            if count > CONFIG.MaxTotalAllowed then
-                State.NeedHop = true
-            end
 
             if State.NeedHop then
                 performHop()
@@ -390,14 +430,16 @@ local function startMainLoop()
 end
 
 State.LastPlayerCount = #Players:GetPlayers()
-startMonitor()
+startPlayerMonitor()
+startLeaderboardMonitor()
 startMainLoop()
 
 notify("Script sẵn sàng", 4)
 
 task.spawn(function()
     task.wait(2)
-    if #Players:GetPlayers() > CONFIG.MaxTotalAllowed then
+    local count = #Players:GetPlayers()
+    if count > 2 then
         State.NeedHop = true
     end
 end)
