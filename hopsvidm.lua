@@ -20,7 +20,6 @@ local http = getHttp()
 local Blacklist = {}
 local QueuedServer = nil
 local IsScanning = false
-local IsRunning = true
 
 if CoreGui:FindFirstChild("PhantomUI") then CoreGui.PhantomUI:Destroy() end
 
@@ -33,8 +32,8 @@ ScreenGui.DisplayOrder = 999999
 ScreenGui.Parent = CoreGui
 
 local Main = Instance.new("Frame")
-Main.Size = UDim2.new(0, 230, 0, 155)
-Main.Position = UDim2.new(0, 20, 0.5, -77)
+Main.Size = UDim2.new(0, 220, 0, 145)
+Main.Position = UDim2.new(0, 20, 0.5, -72)
 Main.BackgroundColor3 = Color3.fromRGB(15, 17, 24)
 Main.BorderSizePixel = 0
 Main.Active = true
@@ -192,10 +191,10 @@ local InfoRight = Instance.new("TextLabel")
 InfoRight.Size = UDim2.new(0.5, -8, 1, 0)
 InfoRight.Position = UDim2.new(0.5, 0, 0, 0)
 InfoRight.BackgroundTransparency = 1
-InfoRight.Text = "🎯 --"
+InfoRight.Text = "🎯 0"
 InfoRight.TextColor3 = Color3.fromRGB(255, 200, 120)
 InfoRight.Font = Enum.Font.GothamBold
-InfoRight.TextSize = 11
+InfoRight.TextSize = 13
 InfoRight.TextXAlignment = Enum.TextXAlignment.Right
 InfoRight.Parent = InfoCard
 
@@ -256,8 +255,7 @@ end
 
 local function updateQueueUI()
     if QueuedServer then
-        QueueText.Text = string.format("1ng · FPS%d · P%d · %s",
-            QueuedServer.fps, QueuedServer.ping, QueuedServer.id:sub(1, 8))
+        QueueText.Text = string.format("1ng · FPS%d · P%d", QueuedServer.fps, QueuedServer.ping)
         QueueText.TextColor3 = Color3.fromRGB(120, 255, 160)
     else
         QueueText.Text = "Queue trống"
@@ -292,12 +290,10 @@ local function requestPage(cursor)
     return data
 end
 
-local function scanPass(maxPages)
+local function scanPass(maxPlayers, maxPages)
     local result = {}
     local cursor = ""
     local pages = 0
-    local oneCount = 0
-    local totalCount = 0
 
     while pages < maxPages do
         local data = requestPage(cursor)
@@ -305,20 +301,18 @@ local function scanPass(maxPages)
         local cnt = 0
         for _, s in ipairs(data.data) do
             cnt = cnt + 1
-            totalCount = totalCount + 1
             local pc = s.playing or 0
-            if pc == 1 then oneCount = oneCount + 1 end
-
             local id = s.id
-            if pc == 1 and id ~= JOB_ID and not Blacklist[id] then
-                result[id] = {
-                    id = id,
-                    ping = s.ping or 999,
-                    fps = s.fps or 60,
-                    playing = pc,
-                    max = s.maxPlayers or 12,
-                    stability = 1,
-                }
+            if pc >= 1 and pc <= maxPlayers then
+                if id ~= JOB_ID and not Blacklist[id] then
+                    result[id] = {
+                        id = id,
+                        ping = s.ping or 999,
+                        fps = s.fps or 60,
+                        playing = pc,
+                        max = s.maxPlayers or 12
+                    }
+                end
             end
         end
         if cnt == 0 then break end
@@ -328,14 +322,100 @@ local function scanPass(maxPages)
         task.wait(0.02)
     end
 
-    InfoRight.Text = "🎯 " .. oneCount .. "/" .. totalCount
     return result
 end
 
-local function calculateScore(s)
-    local fpsScore = math.max(0, 60 - s.fps) * 2
-    local pingScore = math.min(s.ping, 500) / 4
-    return 1000 + fpsScore + pingScore + s.stability * 100
+local function calculateScore(server, stabilityBonus)
+    local playerScore = 0
+    if server.playing == 1 then
+        playerScore = 100
+    elseif server.playing == 2 then
+        playerScore = 40
+    end
+
+    local fpsScore = math.max(0, 60 - server.fps) * 1.5
+    local pingScore = math.min(server.ping, 500) / 5
+    local stabilityScore = stabilityBonus * 60
+
+    return playerScore + fpsScore + pingScore + stabilityScore
+end
+
+local function findOneServer()
+    if IsScanning then return nil end
+    IsScanning = true
+    setPill("SCAN", Color3.fromRGB(255, 200, 120))
+    setStatus("Đang dò server...", Color3.fromRGB(255, 200, 100))
+
+    if not http then
+        IsScanning = false
+        return nil
+    end
+
+    local pass1 = scanPass(2, 12)
+    local count1 = 0
+    for _ in pairs(pass1) do count1 = count1 + 1 end
+
+    if count1 == 0 then
+        IsScanning = false
+        InfoRight.Text = "🎯 0"
+        return nil
+    end
+
+    InfoRight.Text = "🎯 " .. count1
+    setStatus("Đang phân tích...", Color3.fromRGB(255, 200, 100))
+    task.wait(2.5)
+
+    local pass2 = scanPass(2, 12)
+
+    local stable = {}
+    for id, s in pairs(pass2) do
+        if pass1[id] then
+            s.stability = 2
+            if s.playing == pass1[id].playing then
+                s.stability = 3
+            end
+            table.insert(stable, s)
+        end
+    end
+
+    if #stable == 0 then
+        for id, s in pairs(pass1) do
+            s.stability = 1
+            table.insert(stable, s)
+        end
+    end
+
+    setStatus("Đang xác nhận...", Color3.fromRGB(255, 200, 100))
+    task.wait(1.5)
+
+    local pool = {}
+    for _, s in ipairs(stable) do
+        s.score = calculateScore(s, s.stability)
+        table.insert(pool, s)
+    end
+
+    table.sort(pool, function(a, b)
+        return a.score > b.score
+    end)
+
+    local onePlayer = {}
+    for _, s in ipairs(pool) do
+        if s.playing == 1 then
+            table.insert(onePlayer, s)
+        end
+    end
+
+    local pickFrom = onePlayer
+    if #pickFrom == 0 then
+        pickFrom = pool
+    end
+
+    IsScanning = false
+
+    local topCount = math.min(3, #pickFrom)
+    if topCount == 0 then return nil end
+
+    return pickFrom[math.random(1, topCount)]
 end
 
 local function fastTeleport(jobId)
@@ -351,144 +431,58 @@ local function fastTeleport(jobId)
     return true
 end
 
-local function findOneServer()
-    if IsScanning then return nil end
-    IsScanning = true
-
-    setPill("SCAN", Color3.fromRGB(255, 200, 120))
-    setStatus("Đang tìm server 1 người...", Color3.fromRGB(255, 200, 100))
-
-    if not http then
-        IsScanning = false
-        return nil
-    end
-
-    local pass1 = scanPass(25)
-    local count1 = 0
-    for _ in pairs(pass1) do count1 = count1 + 1 end
-
-    if count1 == 0 then
-        IsScanning = false
-        InfoRight.Text = "🎯 0/0"
-        return nil
-    end
-
-    task.wait(2.5)
-
-    local pass2 = scanPass(25)
-    local stable = {}
-    for id, s in pairs(pass2) do
-        if pass1[id] then
-            s.stability = 3
-            table.insert(stable, s)
-        end
-    end
-
-    if #stable == 0 then
-        for _, s in pairs(pass1) do
-            s.stability = 1
-            table.insert(stable, s)
-        end
-    end
-
-    task.wait(1)
-
-    table.sort(stable, function(a, b)
-        return calculateScore(a) > calculateScore(b)
-    end)
-
-    IsScanning = false
-
-    if #stable == 0 then return nil end
-
-    local topCount = math.min(5, #stable)
-    return stable[math.random(1, topCount)]
-end
-
 local function hopToTarget(target)
     if not target then return false end
-    setPill("HOP", Color3.fromRGB(120, 255, 160))
-    setStatus("Vào " .. target.id:sub(1, 8) .. " · FPS" .. target.fps .. " P" .. target.ping, Color3.fromRGB(120, 255, 160))
 
+    setPill("HOP", Color3.fromRGB(120, 255, 160))
+    setStatus("Vào server " .. target.playing .. " ng · FPS" .. target.fps, Color3.fromRGB(120, 255, 160))
+
+    Blacklist[target.id] = true
     task.wait(0.3)
 
-    local ok = fastTeleport(target.id)
-    if not ok then
-        Blacklist[target.id] = true
-        return false
-    end
-    return true
+    return fastTeleport(target.id)
 end
 
 local function tryFillQueue()
     if QueuedServer then return end
     if IsScanning then return end
+
     local srv = findOneServer()
     if srv then
         QueuedServer = srv
         updateQueueUI()
+        setStatus("Đã chuẩn bị queue", Color3.fromRGB(120, 255, 160))
     end
 end
 
 local function mainLoop()
     task.wait(1)
 
-    while IsRunning and ScreenGui.Parent do
+    while ScreenGui.Parent do
         local count = updatePlayerCount()
 
-        if count == 1 then
-            setStatus("Server 1 người · solo", Color3.fromRGB(120, 255, 160))
+        if count <= 1 then
+            setStatus("Server " .. count .. " ng · chờ", Color3.fromRGB(120, 255, 160))
             setPill("ON", Color3.fromRGB(60, 220, 120))
 
-            if not QueuedServer then
-                task.spawn(tryFillQueue)
-            end
+            task.spawn(tryFillQueue)
 
-            local monitoring = true
-            local waited = 0
-            while monitoring and waited < 30 do
+            for _ = 1, 30 do
                 if not ScreenGui.Parent then return end
                 task.wait(1)
-                waited = waited + 1
-
-                local c = #Players:GetPlayers()
+                count = #Players:GetPlayers()
                 updatePlayerCount()
-
-                if c > 1 then
-                    monitoring = false
-                    break
-                end
-
-                if not QueuedServer and not IsScanning then
-                    task.spawn(tryFillQueue)
-                end
+                if count > 1 then break end
             end
 
-            if #Players:GetPlayers() > 1 then
-                setStatus("Có người vào · hop", Color3.fromRGB(255, 180, 100))
-                setPill("HOP", Color3.fromRGB(255, 180, 100))
-
-                local target = QueuedServer
-                if not target or not target.id then
-                    target = findOneServer()
-                end
-
-                if target then
-                    QueuedServer = nil
-                    updateQueueUI()
-                    hopToTarget(target)
-                    task.wait(3)
-                else
-                    Blacklist = {}
-                    task.wait(2)
-                end
+            if count <= 1 then
+                continue
             end
-            continue
         end
 
         if count == 2 then
-            setStatus("Server 2 người · tìm 1ng", Color3.fromRGB(255, 200, 100))
-            setPill("SCAN", Color3.fromRGB(255, 200, 120))
+            setStatus("Có người vào · chuẩn bị hop", Color3.fromRGB(255, 200, 100))
+            setPill("WAIT", Color3.fromRGB(255, 200, 100))
 
             local target = QueuedServer
             if not target then
@@ -499,10 +493,11 @@ local function mainLoop()
                 QueuedServer = nil
                 updateQueueUI()
                 hopToTarget(target)
-                task.wait(3)
+                task.wait(4)
             else
                 Blacklist = {}
-                task.wait(3)
+                setStatus("Không có server · thử lại", Color3.fromRGB(255, 150, 100))
+                task.wait(2)
             end
             continue
         end
@@ -512,20 +507,23 @@ local function mainLoop()
 
         for i = 3, 1, -1 do
             if not ScreenGui.Parent then return end
-            if #Players:GetPlayers() <= 2 then break end
+            if #Players:GetPlayers() <= 1 then break end
             setStatus("Hop sau " .. i .. "s · " .. #Players:GetPlayers() .. " ng", Color3.fromRGB(255, 180, 100))
             task.wait(1)
         end
 
-        if #Players:GetPlayers() <= 2 then continue end
+        if #Players:GetPlayers() <= 1 then continue end
 
-        local target = QueuedServer or findOneServer()
+        local target = QueuedServer
+        if not target then
+            target = findOneServer()
+        end
 
         if target then
             QueuedServer = nil
             updateQueueUI()
             hopToTarget(target)
-            task.wait(3)
+            task.wait(4)
         else
             Blacklist = {}
             setStatus("Không có · thử lại", Color3.fromRGB(255, 150, 100))
