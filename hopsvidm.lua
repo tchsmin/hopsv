@@ -1,4 +1,4 @@
-local VERSION = "PHANTOM v13.3.0"
+local VERSION = "PHANTOM v13.3.1"
 local SCRIPT_NAME = "PHANTOM ⚡"
 
 if not game:IsLoaded() then game.Loaded:Wait() end
@@ -95,7 +95,8 @@ local BLACKLIST_MAX = 150
 local SCAN_DELAY = 0.02
 local PASS_DELAY = 2
 local TOTAL_PASSES = 4
-local MIN_STABILITY = 3
+local MIN_STABILITY = 2
+local MAX_HOP_ATTEMPTS = 5
 
 local function log(level, msg)
     local entry = string.format("[%s][%s] %s", os.date("%H:%M:%S"), level, msg)
@@ -245,8 +246,6 @@ local function calculateScore(server, stability)
         fpsScore = 800
     elseif server.fps <= 55 then
         fpsScore = 200
-    else
-        fpsScore = 0
     end
 
     local pingScore = 0
@@ -260,8 +259,6 @@ local function calculateScore(server, stability)
         pingScore = 2000
     elseif server.ping >= 100 then
         pingScore = 800
-    else
-        pingScore = 0
     end
 
     local stabilityScore = stability * 5000
@@ -398,7 +395,6 @@ local function verifyServerOnePlayer(jobId)
     local cursor = nil
     local pages = 0
     while pages < 30 do
-        if not State.IsScanning and pages > 0 then break end
         local data, err = fetchServers(cursor, "Asc")
         if not data then return nil end
         for _, srv in ipairs(data.data or {}) do
@@ -411,6 +407,7 @@ local function verifyServerOnePlayer(jobId)
         cursor = data.nextPageCursor
         if not cursor or cursor == "" or cursor == "null" then break end
         pages = pages + 1
+        task.wait(0.05)
     end
     return nil
 end
@@ -448,8 +445,8 @@ local function hopToServer(server)
     State.Status = "Đang xác nhận..."
     log("info", "Verify " .. server.id .. " (score=" .. math.floor(server.score) .. " fps=" .. server.fps .. " ping=" .. server.ping .. " stab=" .. server.stability .. ")")
     local verify = verifyServerOnePlayer(server.id)
-    if verify ~= true then
-        log("warn", "Verify fail: server không còn 1 người")
+    if verify == false then
+        log("warn", "Server đã đầy, blacklist")
         addBlacklist(server.id)
         State.IsHopping = false
         return false
@@ -501,26 +498,32 @@ local function tryHop(forceManual)
 
     if State.IsScanning then
         State.Status = "Đang chờ scan..."
+        log("info", "tryHop: đang scan, bỏ qua")
         return
     end
 
-    local candidate = pickCandidate()
-    if not candidate then
-        State.Status = "Chưa có server cổ, scan lại"
-        log("info", "Queue không có server cổ (1 người + stability " .. MIN_STABILITY .. ")")
-        task.spawn(scanServers)
-        return
-    end
-
-    for i = #Queue, 1, -1 do
-        if Queue[i].id == candidate.id then
-            table.remove(Queue, i)
-            break
+    for attempt = 1, MAX_HOP_ATTEMPTS do
+        local candidate = pickCandidate()
+        if not candidate then
+            State.Status = "Hết server cổ, scan lại"
+            log("info", "Hết candidate, kích hoạt scan")
+            task.spawn(scanServers)
+            return
         end
-    end
 
-    local ok = hopToServer(candidate)
-    if not ok then
+        for i = #Queue, 1, -1 do
+            if Queue[i].id == candidate.id then
+                table.remove(Queue, i)
+                break
+            end
+        end
+
+        local ok = hopToServer(candidate)
+        if ok then
+            log("info", "Hop thành công")
+            return
+        end
+        log("warn", "Candidate " .. attempt .. " fail, thử tiếp")
         State.FailCount = State.FailCount + 1
         State.ConsecutiveFails = State.ConsecutiveFails + 1
         if State.ConsecutiveFails >= 6 then
@@ -529,6 +532,9 @@ local function tryHop(forceManual)
             log("warn", "Reset blacklist")
         end
     end
+
+    State.Status = "Thử hết, scan lại"
+    task.spawn(scanServers)
 end
 
 local function buildUI()
@@ -761,13 +767,14 @@ end)
 
 local countdownActive = false
 local countdownRemaining = 0
+local hopInProgress = false
 
 local function monitorLoop()
     while true do
         task.wait(1)
         if State.Auto then
             local playerCount = getPlayerCount()
-            if playerCount >= 3 and not countdownActive and not State.IsHopping then
+            if playerCount >= 3 and not countdownActive and not State.IsHopping and not hopInProgress then
                 countdownActive = true
                 countdownRemaining = State.Delay
                 State.Status = "Đang đếm ngược " .. countdownRemaining .. "s"
@@ -789,11 +796,20 @@ local function monitorLoop()
                         else
                             State.Status = "Bắt đầu hop"
                             log("info", "Countdown xong, bắt đầu hop")
-                            if #Queue < 3 then
-                                task.spawn(scanServers)
-                                task.wait(1)
-                            end
-                            tryHop()
+                            hopInProgress = true
+                            task.spawn(function()
+                                if #Queue < 3 then
+                                    scanServers()
+                                end
+                                if getPlayerCount() <= 2 then
+                                    State.Status = "Server " .. getPlayerCount() .. " người, hủy sau scan"
+                                    log("info", "Sau scan, server còn " .. getPlayerCount() .. " người, hủy hop")
+                                    hopInProgress = false
+                                    return
+                                end
+                                tryHop()
+                                hopInProgress = false
+                            end)
                         end
                     else
                         State.Status = "Đang đếm ngược " .. countdownRemaining .. "s"
@@ -821,8 +837,8 @@ end
 
 local function refillLoop()
     while true do
-        task.wait(3)
-        if State.Auto and #Queue < 3 and not State.IsScanning then
+        task.wait(5)
+        if State.Auto and #Queue < 3 and not State.IsScanning and not hopInProgress then
             State.Status = "Queue thiếu, scan lại"
             task.spawn(scanServers)
         end
