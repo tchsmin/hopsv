@@ -1,600 +1,511 @@
 local Players = game:GetService("Players")
 local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
+local CoreGui = game:GetService("CoreGui")
+local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 
 local LocalPlayer = Players.LocalPlayer
 local PLACE_ID = game.PlaceId
 local JOB_ID = game.JobId
 
-local function notify(title, text, duration)
-    pcall(function()
-        game:GetService("StarterGui"):SetCore("SendNotification", {
-            Title = tostring(title),
-            Text = tostring(text),
-            Duration = duration or 5
-        })
-    end)
-end
-
 local function getHttp()
-    if syn and syn.request then return syn.request end
     if http_request then return http_request end
     if request then return request end
+    if syn and syn.request then return syn.request end
     if fluxus and fluxus.request then return fluxus.request end
-    if krnl and krnl.request then return krnl.request end
-    if http and http.request then return http.request end
     return nil
 end
 local http = getHttp()
 
-if not http then
-    notify("LỖI", "Executor không có HTTP")
-    return
-end
-
 local CONFIG = {
-    RequestRetries = 3,
-    RequestBackoff = 0.2,
-    PageDelay = 0.02,
-    MaxPages = 35,
+    PageDelay = 0,
+    PassDelay = 0.5,
+    ConfirmDelay = 0.3,
+    PreTeleportDelay = 0.1,
+    MaxPages = 25,
     ParallelBranches = 5,
-    TrackDelay = 1.2,
-    TrackPasses = 3,
-    PreTeleportVerify = 2,
-    TeleportTimeout = 10,
-    MaxTeleportAttempts = 2,
     AutoHopDelay = 3,
     MaxTotalAllowed = 2,
-    MinServerAge = 1.5,
-    MinSightings = 3,
-    HopCooldownBase = 6,
-    HopCooldownAfterFail = 12,
-    HopCooldownAfter279 = 25,
-    MaxConsecutiveFail = 4,
 }
 
-local State = {
-    Blacklist = {},
-    IsScanning = false,
-    IsHopping = false,
-    AutoEnabled = true,
-    MonitorConn = nil,
-    LastPlayerCount = 0,
-    TeleportPending = false,
-    ScanGeneration = 0,
-    LastHopTime = 0,
-    ConsecutiveFail = 0,
-    LastFailReason = nil,
-    Last279Time = 0,
-    TotalHops = 0,
-    TotalFails = 0,
-}
+local Blacklist = {}
+local IsScanning = false
+local IsHopping = false
+local AutoEnabled = true
+local TargetTotal = nil
+local MonitorConn = nil
+local LastPlayerCount = 0
 
-local function is279Error(err)
-    if not err then return false end
-    local s = tostring(err):lower()
-    return s:find("279") or s:find("unable to connect") or s:find("không thể kết nối")
+if CoreGui:FindFirstChild("PhantomUI") then CoreGui.PhantomUI:Destroy() end
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "PhantomUI"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.IgnoreGuiInset = true
+ScreenGui.DisplayOrder = 999999
+ScreenGui.Parent = CoreGui
+
+local Main = Instance.new("Frame")
+Main.Size = UDim2.new(0, 200, 0, 108)
+Main.Position = UDim2.new(0, 20, 0.5, -54)
+Main.BackgroundColor3 = Color3.fromRGB(16, 18, 26)
+Main.BorderSizePixel = 0
+Main.Active = true
+Main.Parent = ScreenGui
+
+local MainCorner = Instance.new("UICorner")
+MainCorner.CornerRadius = UDim.new(0, 12)
+MainCorner.Parent = Main
+
+local MainStroke = Instance.new("UIStroke")
+MainStroke.Color = Color3.fromRGB(120, 80, 255)
+MainStroke.Thickness = 1
+MainStroke.Transparency = 0.3
+MainStroke.Parent = Main
+
+local Header = Instance.new("Frame")
+Header.Size = UDim2.new(1, 0, 0, 32)
+Header.BackgroundTransparency = 1
+Header.Parent = Main
+
+local TitleText = Instance.new("TextLabel")
+TitleText.Size = UDim2.new(1, -24, 1, 0)
+TitleText.Position = UDim2.new(0, 12, 0, 0)
+TitleText.BackgroundTransparency = 1
+TitleText.Text = "HOP SERVER"
+TitleText.TextColor3 = Color3.fromRGB(240, 240, 255)
+TitleText.Font = Enum.Font.GothamBold
+TitleText.TextSize = 12
+TitleText.TextXAlignment = Enum.TextXAlignment.Left
+TitleText.Parent = Header
+
+local HeaderDot = Instance.new("Frame")
+HeaderDot.Size = UDim2.new(0, 6, 0, 6)
+HeaderDot.Position = UDim2.new(1, -16, 0.5, -3)
+HeaderDot.BackgroundColor3 = Color3.fromRGB(120, 80, 255)
+HeaderDot.BorderSizePixel = 0
+HeaderDot.Parent = Header
+
+local HdCorner = Instance.new("UICorner")
+HdCorner.CornerRadius = UDim.new(1, 0)
+HdCorner.Parent = HeaderDot
+
+local Divider = Instance.new("Frame")
+Divider.Size = UDim2.new(1, -24, 0, 1)
+Divider.Position = UDim2.new(0, 12, 0, 34)
+Divider.BackgroundColor3 = Color3.fromRGB(35, 40, 55)
+Divider.BorderSizePixel = 0
+Divider.Parent = Main
+
+local PlayerRow = Instance.new("Frame")
+PlayerRow.Size = UDim2.new(1, -24, 0, 30)
+PlayerRow.Position = UDim2.new(0, 12, 0, 40)
+PlayerRow.BackgroundColor3 = Color3.fromRGB(24, 27, 38)
+PlayerRow.BorderSizePixel = 0
+PlayerRow.Parent = Main
+
+local PRCorner = Instance.new("UICorner")
+PRCorner.CornerRadius = UDim.new(0, 7)
+PRCorner.Parent = PlayerRow
+
+local PlayerIcon = Instance.new("TextLabel")
+PlayerIcon.Size = UDim2.new(0, 30, 1, 0)
+PlayerIcon.Position = UDim2.new(0, 2, 0, 0)
+PlayerIcon.BackgroundTransparency = 1
+PlayerIcon.Text = "👥"
+PlayerIcon.TextColor3 = Color3.fromRGB(120, 180, 255)
+PlayerIcon.Font = Enum.Font.GothamBold
+PlayerIcon.TextSize = 14
+PlayerIcon.Parent = PlayerRow
+
+local PlayerLabel = Instance.new("TextLabel")
+PlayerLabel.Size = UDim2.new(1, -100, 1, 0)
+PlayerLabel.Position = UDim2.new(0, 34, 0, 0)
+PlayerLabel.BackgroundTransparency = 1
+PlayerLabel.Text = "Số người"
+PlayerLabel.TextColor3 = Color3.fromRGB(160, 170, 200)
+PlayerLabel.Font = Enum.Font.Gotham
+PlayerLabel.TextSize = 10
+PlayerLabel.TextXAlignment = Enum.TextXAlignment.Left
+PlayerLabel.Parent = PlayerRow
+
+local PlayerValue = Instance.new("TextLabel")
+PlayerValue.Size = UDim2.new(0, 60, 1, 0)
+PlayerValue.Position = UDim2.new(1, -66, 0, 0)
+PlayerValue.BackgroundTransparency = 1
+PlayerValue.Text = "1"
+PlayerValue.TextColor3 = Color3.fromRGB(120, 255, 160)
+PlayerValue.Font = Enum.Font.GothamBold
+PlayerValue.TextSize = 13
+PlayerValue.TextXAlignment = Enum.TextXAlignment.Right
+PlayerValue.Parent = PlayerRow
+
+local StatusRow = Instance.new("Frame")
+StatusRow.Size = UDim2.new(1, -24, 0, 30)
+StatusRow.Position = UDim2.new(0, 12, 0, 76)
+StatusRow.BackgroundColor3 = Color3.fromRGB(24, 27, 38)
+StatusRow.BorderSizePixel = 0
+StatusRow.Parent = Main
+
+local SRCorner = Instance.new("UICorner")
+SRCorner.CornerRadius = UDim.new(0, 7)
+SRCorner.Parent = StatusRow
+
+local StatusDot = Instance.new("Frame")
+StatusDot.Size = UDim2.new(0, 8, 0, 8)
+StatusDot.Position = UDim2.new(0, 12, 0.5, -4)
+StatusDot.BackgroundColor3 = Color3.fromRGB(60, 220, 120)
+StatusDot.BorderSizePixel = 0
+StatusDot.Parent = StatusRow
+
+local DotCorner = Instance.new("UICorner")
+DotCorner.CornerRadius = UDim.new(1, 0)
+DotCorner.Parent = StatusDot
+
+local DotPulse = Instance.new("Frame")
+DotPulse.Size = UDim2.new(1, 0, 1, 0)
+DotPulse.BackgroundColor3 = Color3.fromRGB(60, 220, 120)
+DotPulse.BackgroundTransparency = 0.6
+DotPulse.BorderSizePixel = 0
+DotPulse.Parent = StatusDot
+
+local PulseCorner = Instance.new("UICorner")
+PulseCorner.CornerRadius = UDim.new(1, 0)
+PulseCorner.Parent = DotPulse
+
+task.spawn(function()
+    while ScreenGui.Parent do
+        DotPulse.Size = UDim2.new(1, 0, 1, 0)
+        DotPulse.Position = UDim2.new(0, 0, 0, 0)
+        DotPulse.BackgroundTransparency = 0.6
+        task.wait(1)
+        DotPulse:TweenSizeAndPosition(
+            UDim2.new(3, 0, 3, 0),
+            UDim2.new(-1, 0, -1, 0),
+            Enum.EasingDirection.Out,
+            Enum.EasingStyle.Sine,
+            0.8
+        )
+        DotPulse.BackgroundTransparency = 1
+        task.wait(0.8)
+    end
+end)
+
+local StatusLabel = Instance.new("TextLabel")
+StatusLabel.Size = UDim2.new(1, -100, 1, 0)
+StatusLabel.Position = UDim2.new(0, 26, 0, 0)
+StatusLabel.BackgroundTransparency = 1
+StatusLabel.Text = "Đang chạy"
+StatusLabel.TextColor3 = Color3.fromRGB(160, 170, 200)
+StatusLabel.Font = Enum.Font.Gotham
+StatusLabel.TextSize = 10
+StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+StatusLabel.Parent = StatusRow
+
+local StatusValue = Instance.new("TextLabel")
+StatusValue.Size = UDim2.new(0, 60, 1, 0)
+StatusValue.Position = UDim2.new(1, -66, 0, 0)
+StatusValue.BackgroundTransparency = 1
+StatusValue.Text = "ON"
+StatusValue.TextColor3 = Color3.fromRGB(120, 255, 160)
+StatusValue.Font = Enum.Font.GothamBold
+StatusValue.TextSize = 11
+StatusValue.TextXAlignment = Enum.TextXAlignment.Right
+StatusValue.Parent = StatusRow
+
+local function setStatus(text, color, state)
+    StatusLabel.Text = text
+    StatusValue.Text = state or ""
+    StatusValue.TextColor3 = color or Color3.fromRGB(120, 255, 160)
+    StatusDot.BackgroundColor3 = color or Color3.fromRGB(60, 220, 120)
+    DotPulse.BackgroundColor3 = color or Color3.fromRGB(60, 220, 120)
 end
+
+local function updatePlayerCount()
+    local count = #Players:GetPlayers()
+    PlayerValue.Text = tostring(count)
+    if count <= 2 then
+        PlayerValue.TextColor3 = Color3.fromRGB(120, 255, 160)
+    else
+        PlayerValue.TextColor3 = Color3.fromRGB(255, 120, 120)
+    end
+    return count
+end
+
+Players.PlayerAdded:Connect(function() task.wait(0.2) updatePlayerCount() end)
+Players.PlayerRemoving:Connect(function() task.wait(0.4) updatePlayerCount() end)
 
 local function requestPage(cursor)
-    if not http then return nil, "no_http" end
-    local cursorParam = cursor
-    if type(cursorParam) ~= "string" or cursorParam == "" then
-        cursorParam = ""
-    end
+    if not http then return nil end
     local url = string.format(
         "https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100&cursor=%s",
-        PLACE_ID, cursorParam
+        PLACE_ID, cursor or ""
     )
-    local attempts = 0
-    local lastErr = nil
-    while attempts < CONFIG.RequestRetries do
-        attempts = attempts + 1
-        local ok, res = pcall(function()
-            return http({ Url = url, Method = "GET" })
-        end)
-        if ok and res then
-            local body = res.Body or res.body
-            if type(body) == "string" and #body > 0 then
-                local ok2, data = pcall(function()
-                    return HttpService:JSONDecode(body)
-                end)
-                if ok2 and type(data) == "table" and type(data.data) == "table" then
-                    return data, nil
-                end
-                lastErr = "json_fail"
-            else
-                lastErr = "empty_body"
-            end
-        else
-            lastErr = tostring(res or "request_fail")
-        end
-        if attempts < CONFIG.RequestRetries then
-            task.wait(CONFIG.RequestBackoff * attempts)
-        end
-    end
-    return nil, lastErr
+    local ok, res = pcall(function()
+        return http({ Url = url, Method = "GET", Headers = { ["Accept"] = "application/json" } })
+    end)
+    if not ok or not res then return nil end
+    local body = res.Body or res.body
+    if type(body) ~= "string" then return nil end
+    local ok2, data = pcall(function()
+        return HttpService:JSONDecode(body)
+    end)
+    if not ok2 or type(data) ~= "table" then return nil end
+    return data
 end
 
-local function extractServers(data, targetPlaying, result, lock)
-    if not data or type(data.data) ~= "table" then return 0 end
-    local added = 0
-    local now = tick()
+local function collectFromData(data, targetPlaying, result, lockRef)
+    if not data or not data.data then return end
     for _, s in ipairs(data.data) do
-        if type(s) == "table" then
-            local pc = tonumber(s.playing) or 0
-            local id = s.id
-            if type(id) == "string" and id ~= JOB_ID and not State.Blacklist[id] and pc == targetPlaying then
-                while lock[1] do task.wait() end
-                lock[1] = true
-                if not result[id] then
-                    result[id] = {
-                        id = id,
-                        ping = tonumber(s.ping) or 999,
-                        fps = tonumber(s.fps) or 60,
-                        playing = pc,
-                        max = tonumber(s.maxPlayers) or 12,
-                        firstSeen = now,
-                        lastSeen = now,
-                        sightings = 1,
-                    }
-                    added = added + 1
-                else
-                    result[id].lastSeen = now
-                    result[id].sightings = result[id].sightings + 1
-                    if (result[id].ping or 0) > (tonumber(s.ping) or 999) then
-                        result[id].ping = tonumber(s.ping) or result[id].ping
-                    end
-                    if (result[id].fps or 60) > (tonumber(s.fps) or 60) then
-                        result[id].fps = tonumber(s.fps) or result[id].fps
-                    end
-                end
-                lock[1] = false
-            end
+        local pc = s.playing or 0
+        local id = s.id
+        if id and id ~= JOB_ID and not Blacklist[id] and pc == targetPlaying then
+            while lockRef[1] do task.wait() end
+            lockRef[1] = true
+            result[id] = {
+                id = id,
+                ping = s.ping or 999,
+                fps = s.fps or 60,
+                playing = pc,
+                max = s.maxPlayers or 12,
+            }
+            lockRef[1] = false
         end
     end
-    return added
 end
 
-local function parallelScan(targetPlaying, myGeneration)
+local function parallelScan(targetPlaying)
     local result = {}
-    local lock = {false}
+    local lockRef = {false}
 
-    local first, err = requestPage("")
+    local first = requestPage("")
     if not first then return result end
-    if myGeneration ~= State.ScanGeneration then return result end
-    extractServers(first, targetPlaying, result, lock)
+    collectFromData(first, targetPlaying, result, lockRef)
 
     local rootCursor = first.nextPageCursor
-    if not rootCursor or rootCursor == "" or rootCursor == "null" or type(rootCursor) ~= "string" then
+    if not rootCursor or rootCursor == "" or rootCursor == "null" then
         return result
     end
 
     local branchCursors = { rootCursor }
-    for i = 1, CONFIG.ParallelBranches - 1 do
-        if myGeneration ~= State.ScanGeneration then return result end
+    for i = 1, CONFIG.ParallelBranches do
         local cur = branchCursors[i]
         if cur then
             local data = requestPage(cur)
             if data then
-                extractServers(data, targetPlaying, result, lock)
-                local nc = data.nextPageCursor
-                if nc and nc ~= "" and nc ~= "null" and type(nc) == "string" then
-                    branchCursors[i + 1] = nc
-                else
-                    break
+                collectFromData(data, targetPlaying, result, lockRef)
+                if data.nextPageCursor and data.nextPageCursor ~= "" and data.nextPageCursor ~= "null" then
+                    branchCursors[i + 1] = data.nextPageCursor
                 end
             end
         end
     end
 
-    local activeBranches = {}
-    for i = 1, CONFIG.ParallelBranches do
-        if branchCursors[i] then
-            table.insert(activeBranches, branchCursors[i])
-        end
-    end
-
-    if #activeBranches == 0 then return result end
-
-    local pagesPerBranch = math.max(2, math.floor(CONFIG.MaxPages / #activeBranches))
+    local pagesPerBranch = math.floor(CONFIG.MaxPages / math.max(1, CONFIG.ParallelBranches))
     local threads = {}
 
-    for idx = 1, #activeBranches do
-        local startCursor = activeBranches[idx]
-        table.insert(threads, task.spawn(function()
-            local cursor = startCursor
-            local pages = 0
-            local failCount = 0
-            while pages < pagesPerBranch do
-                if myGeneration ~= State.ScanGeneration then return end
-                local data = requestPage(cursor)
-                if not data then
-                    failCount = failCount + 1
-                    if failCount >= 2 then break end
-                    task.wait(0.25)
-                else
-                    failCount = 0
-                    extractServers(data, targetPlaying, result, lock)
-                    local nc = data.nextPageCursor
-                    if not nc or nc == "" or nc == "null" or type(nc) ~= "string" then break end
-                    cursor = nc
+    for idx = 1, CONFIG.ParallelBranches do
+        local startCursor = branchCursors[idx]
+        if startCursor then
+            table.insert(threads, task.spawn(function()
+                local cursor = startCursor
+                local pages = 0
+                while pages < pagesPerBranch do
+                    local data = requestPage(cursor)
+                    if not data then break end
+                    collectFromData(data, targetPlaying, result, lockRef)
+                    cursor = data.nextPageCursor
+                    if not cursor or cursor == "" or cursor == "null" then break end
                     pages = pages + 1
                     if CONFIG.PageDelay > 0 then task.wait(CONFIG.PageDelay) end
                 end
-            end
-        end))
+            end))
+        end
     end
 
-    local startTime = tick()
-    local hardTimeout = 8
-    while tick() - startTime < hardTimeout do
-        local allDone = true
-        for _, t in ipairs(threads) do
-            if coroutine.status(t) ~= "dead" then
-                allDone = false
-                break
-            end
-        end
-        if allDone then break end
-        task.wait(0.05)
-    end
+    for _ = 1, #threads do task.wait(0.05) end
+    task.wait(0.15)
 
     return result
 end
 
-local function trackServers(serverIds, targetPlaying, myGeneration)
-    local tracked = {}
-    local lock = {false}
-
-    for pass = 1, CONFIG.TrackPasses do
-        if myGeneration ~= State.ScanGeneration then return tracked end
-        task.wait(CONFIG.TrackDelay)
-
-        local passResult = parallelScan(targetPlaying, myGeneration)
-        if myGeneration ~= State.ScanGeneration then return tracked end
-
-        local now = tick()
-        for id, s in pairs(passResult) do
-            if serverIds[id] then
-                if not tracked[id] then
-                    tracked[id] = {
-                        id = id,
-                        ping = s.ping,
-                        fps = s.fps,
-                        playing = s.playing,
-                        max = s.max,
-                        firstSeen = now,
-                        lastSeen = now,
-                        sightings = 1,
-                    }
-                else
-                    tracked[id].lastSeen = now
-                    tracked[id].sightings = tracked[id].sightings + 1
-                    tracked[id].ping = s.ping
-                    tracked[id].fps = s.fps
-                end
-            end
-        end
-
-        if pass < CONFIG.TrackPasses then
-            notify("HOP SERVER", "Track " .. pass .. "/" .. CONFIG.TrackPasses .. " · " .. (function()
-                local c = 0
-                for _ in pairs(tracked) do c = c + 1 end
-                return c
-            end)() .. " server", 2)
-        end
-    end
-
-    return tracked
+local function calculateScore(server, stabilityBonus)
+    local fpsScore = math.max(0, 60 - server.fps) * 2
+    local pingScore = math.min(server.ping, 500) / 4
+    local stabilityScore = stabilityBonus * 100
+    return 1000 + fpsScore + pingScore + stabilityScore
 end
 
-local function verifyServerLive(jobId)
-    if not http then return false, "no_http" end
-    local cursor = ""
-    local pages = 0
-    local maxPages = 12
-    while pages < maxPages do
-        local data, err = requestPage(cursor)
-        if not data then
-            return true, nil
-        end
-        if type(data.data) == "table" then
-            for _, s in ipairs(data.data) do
-                if type(s) == "table" and s.id == jobId then
-                    local pc = tonumber(s.playing) or 0
-                    if pc == 1 then
-                        return true, nil
-                    elseif pc > 1 then
-                        return false, "filled"
-                    elseif pc == 0 then
-                        return false, "empty"
-                    end
-                end
-            end
-        end
-        local nc = data.nextPageCursor
-        if not nc or nc == "" or nc == "null" then break end
-        cursor = nc
-        pages = pages + 1
-    end
-    return true, nil
-end
-
-local function attemptTeleport(jobId)
+local function fastTeleport(jobId)
     local success = false
-    local lastErr = nil
-
-    local ok1, err1 = pcall(function()
+    pcall(function()
         local opts = Instance.new("TeleportOptions")
         opts.ServerInstanceId = jobId
         TeleportService:TeleportAsync(PLACE_ID, {LocalPlayer}, opts)
+        success = true
     end)
-    if ok1 then return true, nil end
-    lastErr = err1
-
-    local ok2, err2 = pcall(function()
+    if success then return true end
+    pcall(function()
         TeleportService:TeleportToPlaceInstance(PLACE_ID, jobId, LocalPlayer)
+        success = true
     end)
-    if ok2 then return true, nil end
-    lastErr = err2
-
-    local ok3, err3 = pcall(function()
-        TeleportService:TeleportToPlaceInstance(PLACE_ID, jobId)
-    end)
-    if ok3 then return true, nil end
-    lastErr = err3
-
-    return false, lastErr
+    return success
 end
 
-local function teleportWithFullVerify(target)
-    if not target or type(target.id) ~= "string" then
-        return false, "invalid_target"
-    end
-
-    for check = 1, CONFIG.PreTeleportVerify do
-        local live, reason = verifyServerLive(target.id)
-        if not live then
-            State.Blacklist[target.id] = true
-            return false, "verify_fail_" .. tostring(reason)
-        end
-        if check < CONFIG.PreTeleportVerify then
-            task.wait(0.2)
-        end
-    end
-
-    State.TeleportPending = true
-    local originalJob = game.JobId
-
-    local ok, err = attemptTeleport(target.id)
-    if not ok then
-        State.TeleportPending = false
-        State.Blacklist[target.id] = true
-        if is279Error(err) then
-            State.Last279Time = tick()
-            return false, "279"
-        end
-        return false, "call_fail"
-    end
-
-    local startTime = tick()
-    while tick() - startTime < CONFIG.TeleportTimeout do
-        if game.JobId ~= originalJob then
-            State.TeleportPending = false
-            return true, nil
-        end
-        task.wait(0.3)
-    end
-
-    State.TeleportPending = false
-    State.Blacklist[target.id] = true
-    return false, "stuck"
-end
-
-local function scoreAndSort(servers)
-    local list = {}
-    local now = tick()
-    for id, s in pairs(servers) do
-        local age = (s.lastSeen or now) - (s.firstSeen or now)
-        local sightings = s.sightings or 1
-        if age >= CONFIG.MinServerAge and sightings >= CONFIG.MinSightings then
-            s.age = age
-            s.score = 0
-            s.score = s.score + sightings * 200
-            s.score = s.score + age * 100
-            s.score = s.score + math.max(0, 60 - (s.fps or 60)) * 3
-            s.score = s.score + math.min(s.ping or 999, 500) / 3
-            table.insert(list, s)
-        end
-    end
-    table.sort(list, function(a, b)
-        if a.score ~= b.score then return a.score > b.score end
-        return (a.ping or 999) > (b.ping or 999)
-    end)
-    return list
-end
-
-local function findBestOnePlayerServer(myGeneration)
-    notify("HOP SERVER", "Scan 1 người...", 2)
-
-    local pass1 = parallelScan(1, myGeneration)
-    if myGeneration ~= State.ScanGeneration then return nil, "cancel" end
-
+local function scanForOnePlayer()
+    local pass1 = parallelScan(1)
     local count1 = 0
-    local serverIds = {}
-    for id, _ in pairs(pass1) do
-        count1 = count1 + 1
-        serverIds[id] = true
+    for _ in pairs(pass1) do count1 = count1 + 1 end
+    if count1 == 0 then return nil end
+
+    task.wait(CONFIG.PassDelay)
+
+    local pass2 = parallelScan(1)
+
+    local stable = {}
+    for id, s in pairs(pass2) do
+        if pass1[id] then
+            s.stability = 2
+            if s.playing == pass1[id].playing then
+                s.stability = 3
+            end
+            table.insert(stable, s)
+        end
     end
 
-    if count1 == 0 then
-        return nil, "no_server"
+    if #stable == 0 then
+        for id, s in pairs(pass1) do
+            s.stability = 1
+            table.insert(stable, s)
+        end
     end
 
-    notify("HOP SERVER", "Có " .. count1 .. " ứng viên · track " .. CONFIG.TrackPasses .. " lần", 3)
+    task.wait(CONFIG.ConfirmDelay)
 
-    local tracked = trackServers(serverIds, 1, myGeneration)
-    if myGeneration ~= State.ScanGeneration then return nil, "cancel" end
-
-    local candidates = scoreAndSort(tracked)
-    if #candidates == 0 then
-        return nil, "no_stable"
+    local finalPool = {}
+    for _, s in ipairs(stable) do
+        s.score = calculateScore(s, s.stability)
+        table.insert(finalPool, s)
     end
 
-    notify("HOP SERVER", "Chọn từ " .. #candidates .. " server ổn định", 3)
+    table.sort(finalPool, function(a, b)
+        if a.stability ~= b.stability then
+            return a.stability > b.stability
+        end
+        return a.score > b.score
+    end)
 
-    local topCount = math.min(3, #candidates)
-    local chosen = candidates[math.random(1, topCount)]
-    return chosen, nil
+    local topCount = math.min(3, #finalPool)
+    if topCount == 0 then return nil end
+
+    return finalPool[math.random(1, topCount)]
 end
 
 local function performHop()
-    if State.IsScanning or State.IsHopping then return end
+    if IsScanning or IsHopping then return end
+    IsScanning = true
 
-    local now = tick()
-    local cooldown = CONFIG.HopCooldownBase
-    if State.ConsecutiveFail >= 2 then
-        cooldown = CONFIG.HopCooldownAfterFail
-    end
-    if now - State.Last279Time < 30 then
-        cooldown = CONFIG.HopCooldownAfter279
-    end
-    if now - State.LastHopTime < cooldown then
-        local wait = math.ceil(cooldown - (now - State.LastHopTime))
-        notify("HOP SERVER", "Cooldown " .. wait .. "s", 2)
-        task.wait(cooldown - (now - State.LastHopTime))
-    end
+    setStatus("Đang quét server...", Color3.fromRGB(255, 200, 100), "...")
 
-    State.IsScanning = true
-    State.ScanGeneration = State.ScanGeneration + 1
-    local myGeneration = State.ScanGeneration
-
-    local target, reason = findBestOnePlayerServer(myGeneration)
-
-    if myGeneration ~= State.ScanGeneration then
-        State.IsScanning = false
+    if not http then
+        IsScanning = false
+        setStatus("Lỗi HTTP", Color3.fromRGB(255, 100, 100), "OFF")
         return
     end
+
+    local target = scanForOnePlayer()
 
     if not target then
-        State.IsScanning = false
-        State.ConsecutiveFail = State.ConsecutiveFail + 1
-        State.TotalFails = State.TotalFails + 1
-        State.LastHopTime = tick()
-        State.LastFailReason = reason
-
-        if reason == "cancel" then return end
-
-        if State.ConsecutiveFail >= CONFIG.MaxConsecutiveFail then
-            notify("HOP SERVER", "Fail " .. State.ConsecutiveFail .. " lần · nghỉ 20s", 5)
-            task.wait(20)
-            State.ConsecutiveFail = 0
-        else
-            notify("HOP SERVER", "Không có server · thử lại sau 5s", 3)
-            task.wait(5)
-        end
+        IsScanning = false
+        setStatus("Không có server", Color3.fromRGB(255, 120, 120), "FAIL")
+        task.wait(5)
+        setStatus("Đang chạy", Color3.fromRGB(120, 255, 160), "ON")
         return
     end
 
-    notify("HOP SERVER", "Vào server · FPS" .. (target.fps or 60) .. " · P" .. (target.ping or 0), 3)
+    setStatus("Đang vào server...", Color3.fromRGB(120, 255, 160), "HOP")
 
-    task.wait(0.1)
+    task.wait(CONFIG.PreTeleportDelay)
 
-    if myGeneration ~= State.ScanGeneration then
-        State.IsScanning = false
-        return
-    end
+    IsScanning = false
+    IsHopping = true
+    Blacklist[target.id] = true
+    TargetTotal = target.playing + 1
 
-    State.IsScanning = false
-    State.IsHopping = true
-    State.Blacklist[target.id] = true
-    State.LastHopTime = tick()
+    fastTeleport(target.id)
 
-    local success = false
-    local failReason = nil
-
-    for attempt = 1, CONFIG.MaxTeleportAttempts do
-        if myGeneration ~= State.ScanGeneration then
-            State.IsHopping = false
-            return
-        end
-
-        local ok, reason2 = teleportWithFullVerify(target)
-        if ok then
-            success = true
-            break
-        else
-            failReason = reason2
-        end
-        task.wait(1.5)
-    end
-
-    State.IsHopping = false
-
-    if success then
-        State.ConsecutiveFail = 0
-        State.TotalHops = State.TotalHops + 1
-    else
-        State.ConsecutiveFail = State.ConsecutiveFail + 1
-        State.TotalFails = State.TotalFails + 1
-
-        if failReason == "279" then
-            notify("HOP SERVER", "Lỗi 279 · nghỉ dài", 4)
-            State.Last279Time = tick()
-            task.wait(CONFIG.HopCooldownAfter279)
-        elseif failReason and failReason:find("verify_fail") then
-            notify("HOP SERVER", "Server đã đầy · đổi server", 3)
-            task.wait(2)
-        elseif failReason == "stuck" then
-            notify("HOP SERVER", "Kẹt · thử server khác", 3)
-            task.wait(3)
-        else
-            notify("HOP SERVER", "Vào fail · đợi " .. CONFIG.HopCooldownAfterFail .. "s", 3)
-            task.wait(CONFIG.HopCooldownAfterFail)
-        end
-    end
+    task.wait(3)
+    IsHopping = false
+    setStatus("Đang chạy", Color3.fromRGB(120, 255, 160), "ON")
 end
 
 local function startMonitor()
-    if State.MonitorConn then State.MonitorConn:Disconnect() end
-    State.MonitorConn = RunService.Heartbeat:Connect(function()
-        if not State.AutoEnabled then return end
-        if State.IsHopping or State.IsScanning or State.TeleportPending then return end
+    if MonitorConn then MonitorConn:Disconnect() end
+    MonitorConn = RunService.Heartbeat:Connect(function()
+        if not AutoEnabled then return end
+        if IsHopping or IsScanning then return end
 
         local count = #Players:GetPlayers()
-        if count == State.LastPlayerCount then return end
-        State.LastPlayerCount = count
+        if count == LastPlayerCount then return end
+        LastPlayerCount = count
 
         if count > CONFIG.MaxTotalAllowed then
-            notify("HOP SERVER", "Server " .. count .. " người · chờ " .. CONFIG.AutoHopDelay .. "s", 3)
+            setStatus("Server có " .. count .. " người · chờ " .. CONFIG.AutoHopDelay .. "s", Color3.fromRGB(255, 200, 120), "...")
 
             task.spawn(function()
                 for i = CONFIG.AutoHopDelay, 1, -1 do
-                    if not State.AutoEnabled then return end
-                    if State.IsHopping or State.IsScanning then return end
+                    if not AutoEnabled then return end
                     local cnt = #Players:GetPlayers()
                     if cnt <= CONFIG.MaxTotalAllowed then
-                        notify("HOP SERVER", "Đã về " .. cnt .. " người · hủy", 3)
+                        setStatus("Đã về " .. cnt .. " người", Color3.fromRGB(120, 255, 160), "ON")
                         return
                     end
-                    if i > 1 then
-                        notify("HOP SERVER", "Hop sau " .. i .. "s · " .. cnt .. " người", 2)
-                    end
+                    setStatus("Hop sau " .. i .. "s · " .. cnt .. " người", Color3.fromRGB(255, 180, 100), "...")
                     task.wait(1)
                 end
 
-                if State.IsHopping or State.IsScanning then return end
                 if #Players:GetPlayers() > CONFIG.MaxTotalAllowed then
                     performHop()
                 end
             end)
+        else
+            setStatus("Server " .. count .. " người · ổn", Color3.fromRGB(120, 255, 160), "ON")
         end
     end)
 end
 
-notify("HOP SERVER", "Đang khởi động...", 3)
+local dragging, dragStart, startPos
+Header.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = Main.Position
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if not dragging then return end
+    if input.UserInputType ~= Enum.UserInputType.MouseMovement
+        and input.UserInputType ~= Enum.UserInputType.Touch then return end
+    local d = input.Position - dragStart
+    Main.Position = UDim2.new(
+        startPos.X.Scale, startPos.X.Offset + d.X,
+        startPos.Y.Scale, startPos.Y.Offset + d.Y
+    )
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = false
+    end
+end)
+
+updatePlayerCount()
+setStatus("Đang chạy", Color3.fromRGB(120, 255, 160), "ON")
 startMonitor()
 
 task.spawn(function()
@@ -602,7 +513,5 @@ task.spawn(function()
     local count = #Players:GetPlayers()
     if count > CONFIG.MaxTotalAllowed then
         performHop()
-    else
-        notify("HOP SERVER", "Đang chạy · chờ người vào", 3)
     end
 end)
