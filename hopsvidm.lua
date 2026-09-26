@@ -1,4 +1,4 @@
-local VERSION = "hop server vidm v13.3.9"
+local VERSION = "hop server vidm v13.3.10"
 local SCRIPT_NAME = "hop server vidm"
 
 if not game:IsLoaded() then game.Loaded:Wait() end
@@ -131,17 +131,17 @@ local LogIndex = 0
 local LogCount = 0
 local LOG_MAX = 50
 local scanPending = false
-local MAX_PAGES = 50
-local MAX_QUEUE = 50
-local SCAN_TIMEOUT = 30
-local HOP_TIMEOUT = 15
-local BLACKLIST_MAX = 300
-local PASS_DELAY = 0.1
-local TOTAL_PASSES = 2
+local MAX_PAGES = 100
+local MAX_QUEUE = 80
+local SCAN_TIMEOUT = 45
+local HOP_TIMEOUT = 20
+local BLACKLIST_MAX = 500
+local PASS_DELAY = 0.05
+local TOTAL_PASSES = 3
 local MIN_STABILITY = 1
-local MAX_HOP_ATTEMPTS = 10
-local BRANCHES_PER_PASS = 6
-local VERIFY_MAX_PAGES = 3
+local MAX_HOP_ATTEMPTS = 15
+local BRANCHES_PER_PASS = 8
+local VERIFY_MAX_PAGES = 10
 
 local function log(level, msg)
     local entry = string.format("[%s][%s] %s", os.date("%H:%M:%S"), level, msg)
@@ -219,13 +219,13 @@ local function scanBranch(branchId, sortOrder, result)
             local jobId = safeStr(srv.id, "")
             local playing = safeNum(srv.playing, 0)
             if jobId ~= "" and jobId ~= game.JobId then
-                if playing == 1 or playing == 2 then
+                if playing == 1 then
                     if not isBlacklisted(jobId) then
                         result[jobId] = {
                             id = jobId,
                             ping = safeNum(srv.ping, 999),
                             fps = safeNum(srv.fps, 60),
-                            playing = playing,
+                            playing = 1,
                             max = safeNum(srv.maxPlayers, 12),
                         }
                     end
@@ -250,7 +250,7 @@ end
 local function scanOnePass(passTag)
     local result = {}
     local threads = {}
-    local orders = {"Asc", "Desc", "Asc", "Desc", "Asc", "Desc"}
+    local orders = {"Asc", "Desc", "Asc", "Desc", "Asc", "Desc", "Asc", "Desc"}
     for i = 1, BRANCHES_PER_PASS do
         local sortOrder = orders[i] or "Asc"
         local branchId = passTag .. "_B" .. i
@@ -266,12 +266,7 @@ local function scanOnePass(passTag)
 end
 
 local function calculateScore(server, stability)
-    local playerScore = 0
-    if server.playing == 1 then
-        playerScore = 100000
-    elseif server.playing == 2 then
-        playerScore = 5000
-    end
+    local playerScore = 100000
 
     local fpsScore = 0
     if server.fps <= 5 then fpsScore = 15000
@@ -381,7 +376,7 @@ local function scanServers()
         local msg = ""
         for i = 1, math.min(3, #Queue) do
             local s = Queue[i]
-            msg = msg .. string.format(" #%d(p=%d,fps=%d,ping=%d)", i, s.playing, s.fps, s.ping)
+            msg = msg .. string.format(" #%d(p=%d,fps=%d,ping=%d,stab=%d)", i, s.playing, s.fps, s.ping, s.stability)
         end
         log("info", "TOP3:" .. msg)
     end
@@ -437,11 +432,17 @@ local function hopToServer(server)
     State.HopStart = tick()
 
     State.Status = "Đang xác định server..."
-    log("info", "Verify " .. server.id .. " (p=" .. server.playing .. ", score=" .. math.floor(server.score) .. ")")
+    log("info", "Verify " .. server.id .. " (score=" .. math.floor(server.score) .. ")")
     local verify = verifyServerOnePlayer(server.id)
 
-    if verify ~= true then
-        log("warn", "Verify fail (playing != 1) → blacklist")
+    if verify == false then
+        log("warn", "Server đã đầy → blacklist")
+        addBlacklist(server.id)
+        State.IsHopping = false
+        return false
+    end
+    if verify == nil then
+        log("warn", "Không tìm thấy trong " .. VERIFY_MAX_PAGES .. " trang → blacklist")
         addBlacklist(server.id)
         State.IsHopping = false
         return false
@@ -472,8 +473,8 @@ end
 
 local function pickTopCandidate()
     for _, s in ipairs(Queue) do
-        if not isBlacklisted(s.id) then
-            if s.playing == 1 then return s end
+        if not isBlacklisted(s.id) and s.playing == 1 then
+            return s
         end
     end
     return nil
@@ -626,7 +627,7 @@ local function buildUI()
     end
 
     makeRow("Players", "Số người", 6)
-    makeRow("Found", "Server tìm được", 30)
+    makeRow("Found", "Server 1 người", 30)
     makeRow("Queue", "Queue", 54)
     makeRow("Speed", "Tốc độ", 78)
     makeRow("Status", "Trạng thái", 102)
@@ -731,7 +732,7 @@ UI.CopyButton.MouseButton1Click:Connect(function()
         "[hop server vidm] " .. VERSION,
         "Số người: " .. tostring(getPlayerCount()),
         "Queue: " .. tostring(#Queue),
-        "Server tìm được: " .. tostring(State.FoundCount),
+        "Server 1 người: " .. tostring(State.FoundCount),
         "Seen: " .. tostring(State.SeenCount),
         "Fails: " .. tostring(State.FailCount),
         "Tốc độ: " .. State.ScanSpeed .. " sv/s",
@@ -809,7 +810,7 @@ end
 local function refillLoop()
     while true do
         task.wait(5)
-        if State.Auto and #Queue < 15 and not State.IsScanning and not State.IsHopping and not scanPending then
+        if State.Auto and #Queue < 20 and not State.IsScanning and not State.IsHopping and not scanPending then
             if getPlayerCount() < 3 then
                 task.spawn(scanServers)
             end
