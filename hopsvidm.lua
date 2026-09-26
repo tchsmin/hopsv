@@ -1,4 +1,4 @@
-local VERSION = "hop server vidm v13.3.7"
+local VERSION = "hop server vidm v13.3.8"
 local SCRIPT_NAME = "hop server vidm"
 
 if not game:IsLoaded() then game.Loaded:Wait() end
@@ -18,7 +18,7 @@ while not LocalPlayer and waited < 5 do
 end
 
 if not LocalPlayer then
-    warn("[hop server vidm] Không tìm thấy LocalPlayer sau 5 giây")
+    warn("[hop server vidm] Không tìm thấy LocalPlayer")
     return
 end
 
@@ -55,14 +55,13 @@ if not HttpRequest then
             Duration = 5,
         })
     end)
-    warn("[hop server vidm] Executor không hỗ trợ HTTP")
     return
 end
 
 local RequestPool = {
     lastRequest = 0,
-    minInterval = 0.03,
-    maxInterval = 0.4,
+    minInterval = 0.01,
+    maxInterval = 0.35,
     totalReqs = 0,
     hits429 = 0,
     successStreak = 0,
@@ -92,14 +91,14 @@ local function throttledGet(url)
         if res.Status == 429 then
             RequestPool.hits429 = RequestPool.hits429 + 1
             RequestPool.successStreak = 0
-            local ni = RequestPool.minInterval * 1.5
+            local ni = RequestPool.minInterval * 1.4
             if ni > RequestPool.maxInterval then ni = RequestPool.maxInterval end
             RequestPool.minInterval = ni
         elseif res.Status == 200 then
             RequestPool.successStreak = RequestPool.successStreak + 1
-            if RequestPool.successStreak >= 20 and RequestPool.minInterval > 0.03 then
-                local ni = RequestPool.minInterval * 0.95
-                if ni < 0.03 then ni = 0.03 end
+            if RequestPool.successStreak >= 15 and RequestPool.minInterval > 0.01 then
+                local ni = RequestPool.minInterval * 0.9
+                if ni < 0.01 then ni = 0.01 end
                 RequestPool.minInterval = ni
                 RequestPool.successStreak = 0
             end
@@ -123,7 +122,6 @@ local State = {
     ScanSpeed = 0,
     TotalScans = 0,
     CurrentPage = 0,
-    VerifyDelay = 3,
 }
 
 local Queue = {}
@@ -133,18 +131,16 @@ local LogIndex = 0
 local LogCount = 0
 local LOG_MAX = 50
 local scanPending = false
-local MAX_PAGES = 80
+local MAX_PAGES = 50
 local MAX_QUEUE = 50
-local SCAN_TIMEOUT = 60
-local HOP_TIMEOUT = 25
+local SCAN_TIMEOUT = 30
+local HOP_TIMEOUT = 12
 local BLACKLIST_MAX = 300
-local PASS_DELAY = 0.2
-local TOTAL_PASSES = 3
+local PASS_DELAY = 0.1
+local TOTAL_PASSES = 2
 local MIN_STABILITY = 1
-local MAX_HOP_ATTEMPTS = 8
-local BRANCHES_PER_PASS = 4
-local VERIFY_MAX_PAGES = 20
-local VERIFY_RETRY = 2
+local MAX_HOP_ATTEMPTS = 10
+local BRANCHES_PER_PASS = 6
 
 local function log(level, msg)
     local entry = string.format("[%s][%s] %s", os.date("%H:%M:%S"), level, msg)
@@ -155,7 +151,7 @@ local function log(level, msg)
 
     if level == "error" or level == "warn" then
         print(entry)
-    elseif msg:find("^Scan") or msg:find("^TOP") or msg:find("Countdown") or msg:find("^Hop") or msg:find("^Pass") or msg:find("^Verify") then
+    elseif msg:find("^Scan") or msg:find("^TOP") or msg:find("Countdown") or msg:find("^Hop") then
         print(entry)
     end
 end
@@ -253,7 +249,7 @@ end
 local function scanOnePass(passTag)
     local result = {}
     local threads = {}
-    local orders = {"Asc", "Desc", "Asc", "Desc"}
+    local orders = {"Asc", "Desc", "Asc", "Desc", "Asc", "Desc"}
     for i = 1, BRANCHES_PER_PASS do
         local sortOrder = orders[i] or "Asc"
         local branchId = passTag .. "_B" .. i
@@ -309,7 +305,7 @@ local function scanServers()
     scanPending = true
     if State.IsScanning then
         local t = tick()
-        while State.IsScanning and tick() - t < 15 do task.wait(0.1) end
+        while State.IsScanning and tick() - t < 10 do task.wait(0.05) end
         if State.IsScanning then State.IsScanning = false end
     end
 
@@ -384,53 +380,15 @@ local function scanServers()
         local msg = ""
         for i = 1, math.min(3, #Queue) do
             local s = Queue[i]
-            msg = msg .. string.format(" #%d(p=%d,fps=%d,ping=%d,stab=%d)", i, s.playing, s.fps, s.ping, s.stability)
+            msg = msg .. string.format(" #%d(p=%d,fps=%d,ping=%d)", i, s.playing, s.fps, s.ping)
         end
         log("info", "TOP3:" .. msg)
     end
     log("info", "Scan " .. #Queue .. " queue, " .. State.ScanSpeed .. " sv/s")
 end
 
-local function verifyServer(jobId)
-    for retry = 1, VERIFY_RETRY do
-        local cursor = nil
-        local pages = 0
-        local found = false
-        local playingFinal = -1
-        while pages < VERIFY_MAX_PAGES do
-            local data = fetchServers(cursor, "Asc")
-            if not data then
-                found = false
-                break
-            end
-            for _, srv in ipairs(data.data or {}) do
-                if safeStr(srv.id, "") == jobId then
-                    playingFinal = safeNum(srv.playing, -1)
-                    found = true
-                    break
-                end
-            end
-            if found then break end
-            cursor = data.nextPageCursor
-            if not cursor or cursor == "" or cursor == "null" then break end
-            pages = pages + 1
-        end
-
-        if found then
-            log("info", "Verify retry " .. retry .. ": playing=" .. playingFinal)
-            if playingFinal == 1 then return true, 1 end
-            if playingFinal == 2 then return false, 2 end
-            if playingFinal >= 3 then return false, playingFinal end
-        else
-            log("warn", "Verify retry " .. retry .. ": không thấy server trong " .. pages .. " trang")
-        end
-        task.wait(0.5)
-    end
-    return nil, 0
-end
-
 local function teleportToServer(jobId)
-    task.wait(0.3)
+    task.wait(0.1)
     local ok = pcall(function()
         TeleportService:TeleportToPlaceInstance(game.PlaceId, jobId, LocalPlayer)
     end)
@@ -457,26 +415,8 @@ local function hopToServer(server)
     State.IsHopping = true
     State.HopStart = tick()
 
-    State.Status = "Đợi " .. State.VerifyDelay .. "s..."
-    log("info", "Chờ " .. State.VerifyDelay .. "s verify " .. server.id)
-    task.wait(State.VerifyDelay)
-
-    State.Status = "Đang xác định server..."
-    local verify, playing = verifyServer(server.id)
-
-    if verify == true then
-        State.Status = "Đang tạo cổng kết nối..."
-        log("info", "Verify OK (1 người), teleport " .. server.id)
-    elseif verify == false and playing == 2 then
-        State.Status = "Đang tạo cổng kết nối..."
-        log("info", "Verify 2 người, chấp nhận teleport " .. server.id)
-    else
-        log("warn", "Server fail verify (playing=" .. tostring(playing) .. ") → blacklist")
-        addBlacklist(server.id)
-        State.IsHopping = false
-        return false
-    end
-
+    State.Status = "Đang tạo cổng kết nối..."
+    log("info", "Hop " .. server.id .. " (p=" .. server.playing .. ", score=" .. math.floor(server.score) .. ")")
     addBlacklist(server.id)
 
     local ok = teleportToServer(server.id)
@@ -493,7 +433,7 @@ local function hopToServer(server)
     end
 
     State.Status = "Đang vào..."
-    task.wait(1.5)
+    task.wait(1.2)
     State.IsHopping = false
     return true
 end
@@ -525,7 +465,7 @@ local function tryHop(forceManual)
 
     if State.IsScanning then
         local t = tick()
-        while State.IsScanning and tick() - t < 20 do task.wait(0.1) end
+        while State.IsScanning and tick() - t < 15 do task.wait(0.05) end
         if State.IsScanning then State.IsScanning = false end
     end
 
@@ -841,8 +781,8 @@ end
 
 local function refillLoop()
     while true do
-        task.wait(8)
-        if State.Auto and #Queue < 10 and not State.IsScanning and not State.IsHopping and not scanPending then
+        task.wait(5)
+        if State.Auto and #Queue < 15 and not State.IsScanning and not State.IsHopping and not scanPending then
             if getPlayerCount() < 3 then
                 task.spawn(scanServers)
             end
