@@ -1,4 +1,4 @@
-local VERSION = "hop server vidm v13.3.8"
+local VERSION = "hop server vidm v13.3.9"
 local SCRIPT_NAME = "hop server vidm"
 
 if not game:IsLoaded() then game.Loaded:Wait() end
@@ -134,13 +134,14 @@ local scanPending = false
 local MAX_PAGES = 50
 local MAX_QUEUE = 50
 local SCAN_TIMEOUT = 30
-local HOP_TIMEOUT = 12
+local HOP_TIMEOUT = 15
 local BLACKLIST_MAX = 300
 local PASS_DELAY = 0.1
 local TOTAL_PASSES = 2
 local MIN_STABILITY = 1
 local MAX_HOP_ATTEMPTS = 10
 local BRANCHES_PER_PASS = 6
+local VERIFY_MAX_PAGES = 3
 
 local function log(level, msg)
     local entry = string.format("[%s][%s] %s", os.date("%H:%M:%S"), level, msg)
@@ -151,7 +152,7 @@ local function log(level, msg)
 
     if level == "error" or level == "warn" then
         print(entry)
-    elseif msg:find("^Scan") or msg:find("^TOP") or msg:find("Countdown") or msg:find("^Hop") then
+    elseif msg:find("^Scan") or msg:find("^TOP") or msg:find("Countdown") or msg:find("^Hop") or msg:find("^Verify") then
         print(entry)
     end
 end
@@ -387,6 +388,26 @@ local function scanServers()
     log("info", "Scan " .. #Queue .. " queue, " .. State.ScanSpeed .. " sv/s")
 end
 
+local function verifyServerOnePlayer(jobId)
+    local cursor = nil
+    local pages = 0
+    while pages < VERIFY_MAX_PAGES do
+        local data = fetchServers(cursor, "Asc")
+        if not data then return nil end
+        for _, srv in ipairs(data.data or {}) do
+            if safeStr(srv.id, "") == jobId then
+                local playing = safeNum(srv.playing, 0)
+                if playing == 1 then return true end
+                return false
+            end
+        end
+        cursor = data.nextPageCursor
+        if not cursor or cursor == "" or cursor == "null" then break end
+        pages = pages + 1
+    end
+    return nil
+end
+
 local function teleportToServer(jobId)
     task.wait(0.1)
     local ok = pcall(function()
@@ -415,8 +436,19 @@ local function hopToServer(server)
     State.IsHopping = true
     State.HopStart = tick()
 
+    State.Status = "Đang xác định server..."
+    log("info", "Verify " .. server.id .. " (p=" .. server.playing .. ", score=" .. math.floor(server.score) .. ")")
+    local verify = verifyServerOnePlayer(server.id)
+
+    if verify ~= true then
+        log("warn", "Verify fail (playing != 1) → blacklist")
+        addBlacklist(server.id)
+        State.IsHopping = false
+        return false
+    end
+
     State.Status = "Đang tạo cổng kết nối..."
-    log("info", "Hop " .. server.id .. " (p=" .. server.playing .. ", score=" .. math.floor(server.score) .. ")")
+    log("info", "Verify OK, teleport " .. server.id)
     addBlacklist(server.id)
 
     local ok = teleportToServer(server.id)
@@ -442,11 +474,6 @@ local function pickTopCandidate()
     for _, s in ipairs(Queue) do
         if not isBlacklisted(s.id) then
             if s.playing == 1 then return s end
-        end
-    end
-    for _, s in ipairs(Queue) do
-        if not isBlacklisted(s.id) then
-            if s.playing == 2 then return s end
         end
     end
     return nil
