@@ -1,5 +1,5 @@
-local VERSION = "PHANTOM v13.3.6"
-local SCRIPT_NAME = "PHANTOM ⚡"
+local VERSION = "HOP SERVER vidm v13.3.6"
+local SCRIPT_NAME = "VIDM "
 
 if not game:IsLoaded() then game.Loaded:Wait() end
 
@@ -18,7 +18,7 @@ while not LocalPlayer and waited < 5 do
 end
 
 if not LocalPlayer then
-    warn("[PHANTOM] Không tìm thấy LocalPlayer sau 5 giây")
+    warn("[VIDM] Không tìm thấy LocalPlayer sau 5 giây")
     return
 end
 
@@ -50,12 +50,12 @@ local HttpRequest = getRequest()
 if not HttpRequest then
     pcall(function()
         StarterGui:SetCore("SendNotification", {
-            Title = "PHANTOM",
+            Title = "VIDM",
             Text = "Executor không hỗ trợ HTTP",
             Duration = 5,
         })
     end)
-    warn("[PHANTOM] Executor không hỗ trợ HTTP")
+    warn("[VIDM] Executor không hỗ trợ HTTP")
     return
 end
 
