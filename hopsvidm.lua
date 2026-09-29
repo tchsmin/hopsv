@@ -3,34 +3,34 @@ if _G.PHANTOM_LOADED then
 end
 _G.PHANTOM_LOADED = true
 
-local VERSION = "13.4.0"
+local VERSION = "13.4.1"
 local APP_NAME = "PHANTOM ⚡"
 
-local SCAN_MAX_PAGES = 100
-local SCAN_BRANCHES = 8
-local SCAN_PASSES = 3
-local MIN_PASS_DELAY = 1.5
-local PAGE_DELAY_MIN = 0.02
-local PAGE_DELAY_MAX = 0.5
-local PAGE_DELAY_START = 0.03
-local SCAN_TIMEOUT = 40
-local API_RETRY = 3
-local VERIFY_MAX_PAGES = 10
-local VERIFY_RETRY = 2
-local VERIFY_TIMEOUT = 30
-local MAX_QUEUE = 80
-local MIN_QUEUE = 3
-local REFILL_AT = 2
+local SCAN_MAX_PAGES = 40
+local SCAN_BRANCHES = 10
+local SCAN_PASSES = 2
+local MIN_PASS_DELAY = 0.4
+local PAGE_DELAY_MIN = 0.005
+local PAGE_DELAY_MAX = 0.15
+local PAGE_DELAY_START = 0.01
+local SCAN_TIMEOUT = 20
+local API_RETRY = 2
+local VERIFY_MAX_PAGES = 6
+local VERIFY_RETRY = 1
+local VERIFY_TIMEOUT = 12
+local MAX_QUEUE = 100
+local MIN_QUEUE = 5
+local REFILL_AT = 3
 local HOP_ATTEMPTS = 15
-local MAX_BLACKLIST = 80
+local MAX_BLACKLIST = 120
 local MAX_FAIL_STREAK = 6
-local PRE_TELEPORT_DELAY = 0.3
-local POST_TELEPORT_WAIT = 3
-local JOBID_CONFIRM_TIMEOUT = 15
-local WATCHDOG_STEP = 3
-local WATCHDOG_HOP_TIMEOUT = 20
-local WATCHDOG_FILL_TIMEOUT = 20
-local MONITOR_STEP = 1
+local PRE_TELEPORT_DELAY = 0.1
+local POST_TELEPORT_WAIT = 1.2
+local JOBID_CONFIRM_TIMEOUT = 8
+local WATCHDOG_STEP = 2
+local WATCHDOG_HOP_TIMEOUT = 15
+local WATCHDOG_FILL_TIMEOUT = 15
+local MONITOR_STEP = 0.5
 local HOP_COUNTDOWN = 3
 local LOG_LIMIT = 50
 local SCORE_ONE = 1000
@@ -38,7 +38,7 @@ local SCORE_TWO = 200
 local SCORE_THREE = 50
 local SCORE_STABILITY = 100
 local MIN_STABILITY = 1
-local EARLY_STOP_PAGE = 10
+local EARLY_STOP_PAGE = 5
 local EARLY_STOP_FOUND = 40
 
 local Players = game:GetService("Players")
@@ -46,6 +46,7 @@ local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
 local CoreGuiService = game:GetService("CoreGui")
 local StarterGuiService = game:GetService("StarterGui")
+local RunService = game:GetService("RunService")
 
 local LocalPlayer = Players.LocalPlayer
 local WaitStart = os.clock()
@@ -191,12 +192,16 @@ end
 
 local function throttleSuccess()
     ApiErrorStreak = 0
-    CurrentPageDelay = math.max(PAGE_DELAY_MIN, CurrentPageDelay * 0.85)
+    if CurrentPageDelay > PAGE_DELAY_MIN then
+        CurrentPageDelay = math.max(PAGE_DELAY_MIN, CurrentPageDelay * 0.8)
+    end
 end
 
 local function throttleFail()
     ApiErrorStreak = ApiErrorStreak + 1
-    CurrentPageDelay = math.min(PAGE_DELAY_MAX, CurrentPageDelay * 1.6)
+    if CurrentPageDelay < PAGE_DELAY_MAX then
+        CurrentPageDelay = math.min(PAGE_DELAY_MAX, CurrentPageDelay * 1.5)
+    end
 end
 
 local function fetchServerPage(cursor, sortOrder)
@@ -221,7 +226,6 @@ local function fetchServerPage(cursor, sortOrder)
 end
 
 local function fetchPageRetry(cursor, sortOrder)
-    local waitTime = 0.4
     for attempt = 1, API_RETRY do
         local data, err = fetchServerPage(cursor, sortOrder)
         if data then
@@ -232,54 +236,46 @@ local function fetchPageRetry(cursor, sortOrder)
         if err == "DECODE_FAIL" then
             return nil, err
         end
-        task.wait(waitTime)
-        waitTime = waitTime * 2
+        task.wait(0.05)
     end
     return nil, "RETRY_EXHAUSTED"
 end
 
 local function mergeFound(server, passIndex)
-    while MergeLock do
-        task.wait()
+    local id = safeStr(server.id)
+    if id == "" or id == CurrentJobId then
+        return
     end
-    MergeLock = true
-    pcall(function()
-        local id = safeStr(server.id)
-        if id == "" or id == CurrentJobId then
-            return
-        end
-        if blacklistHas(id) then
-            return
-        end
-        local playing = safeNum(server.playing, -1)
-        if playing < 1 or playing > 2 then
-            return
-        end
-        local entry = FoundServers[id]
-        if not entry then
-            entry = {
-                Id = id,
-                Playing = playing,
-                Fps = safeNum(server.fps, 60),
-                Ping = safeNum(server.ping, 0),
-                Passes = {},
-                Stability = 1,
-                Score = 0
-            }
-            FoundServers[id] = entry
-            FoundCount = FoundCount + 1
-        end
-        entry.Passes[passIndex] = true
-        local seen = 0
-        for _ in pairs(entry.Passes) do
-            seen = seen + 1
-        end
-        entry.Stability = seen >= 2 and 3 or 1
-        entry.Playing = playing
-        entry.Fps = safeNum(server.fps, entry.Fps)
-        entry.Ping = safeNum(server.ping, entry.Ping)
-    end)
-    MergeLock = false
+    if blacklistHas(id) then
+        return
+    end
+    local playing = safeNum(server.playing, -1)
+    if playing < 1 or playing > 2 then
+        return
+    end
+    local entry = FoundServers[id]
+    if not entry then
+        entry = {
+            Id = id,
+            Playing = playing,
+            Fps = safeNum(server.fps, 60),
+            Ping = safeNum(server.ping, 0),
+            Passes = {},
+            Stability = 1,
+            Score = 0
+        }
+        FoundServers[id] = entry
+        FoundCount = FoundCount + 1
+    end
+    entry.Passes[passIndex] = true
+    local seen = 0
+    for _ in pairs(entry.Passes) do
+        seen = seen + 1
+    end
+    entry.Stability = seen >= 2 and 3 or 1
+    entry.Playing = playing
+    entry.Fps = safeNum(server.fps, entry.Fps)
+    entry.Ping = safeNum(server.ping, entry.Ping)
 end
 
 local function scanBranch(branchIndex, passIndex, sortOrder)
@@ -291,7 +287,6 @@ local function scanBranch(branchIndex, passIndex, sortOrder)
         end
         local data, err = fetchPageRetry(cursor, sortOrder)
         if not data then
-            addLog("WARN", "Nhánh " .. branchIndex .. " lỗi " .. safeStr(err, "?"))
             return
         end
         local list = data.data
@@ -310,7 +305,9 @@ local function scanBranch(branchIndex, passIndex, sortOrder)
         end
         previousCursor = cursor or "___"
         cursor = nextCursor
-        task.wait(CurrentPageDelay)
+        if CurrentPageDelay > 0 then
+            task.wait(CurrentPageDelay)
+        end
     end
 end
 
@@ -339,8 +336,8 @@ local function queueSort()
 end
 
 local function queueContains(jobId)
-    for _, item in ipairs(ServerQueue) do
-        if item.Id == jobId then
+    for i = 1, #ServerQueue do
+        if ServerQueue[i].Id == jobId then
             return true
         end
     end
@@ -396,27 +393,23 @@ local function runScan()
                 sortOrder = "Desc"
             end
             task.spawn(function()
-                local ok, err = pcall(function()
+                local ok = pcall(function()
                     scanBranch(branch, pass, sortOrder)
                 end)
-                if not ok then
-                    addLog("ERR", "Nhánh " .. branch .. " crash: " .. safeStr(err))
-                end
                 doneCount = doneCount + 1
             end)
-            task.wait(0.05)
         end
         while doneCount < SCAN_BRANCHES do
             if os.clock() - ScanStartedAt > SCAN_TIMEOUT then
                 ScanCancelled = true
                 break
             end
-            task.wait(0.1)
+            task.wait(0.05)
         end
         if ScanCancelled then
             break
         end
-        if pass < SCAN_PASSES then
+        if pass < SCAN_PASSES and FoundCount < MIN_QUEUE then
             setStatus("Đang phân tích...")
             task.wait(MIN_PASS_DELAY)
         end
@@ -437,9 +430,8 @@ local function ensureScan()
     end
     FillStartedAt = os.clock()
     task.spawn(function()
-        local ok, err = pcall(runScan)
+        local ok = pcall(runScan)
         if not ok then
-            addLog("ERR", "Scan lỗi: " .. safeStr(err))
             IsScanning = false
         end
     end)
@@ -453,7 +445,7 @@ local function verifyServer(jobId)
             if os.clock() > deadline then
                 return nil
             end
-            local data, err = fetchServerPage(cursor, "Asc")
+            local data = fetchServerPage(cursor, "Asc")
             if not data then
                 break
             end
@@ -475,23 +467,20 @@ local function verifyServer(jobId)
                 break
             end
             cursor = nextCursor
-            task.wait(CurrentPageDelay)
         end
-        task.wait(0.3)
     end
     return nil
 end
 
 local function teleportToServer(jobId)
-    local okMain, errMain = pcall(function()
+    local okMain = pcall(function()
         TeleportService:TeleportToPlaceInstance(PlaceId, jobId, LocalPlayer)
     end)
     if okMain then
         return true
     end
-    addLog("WARN", "Teleport chính lỗi: " .. safeStr(errMain))
-    task.wait(0.2)
-    local okOpt, errOpt = pcall(function()
+    task.wait(0.1)
+    local okOpt = pcall(function()
         local options = Instance.new("TeleportOptions")
         options.ServerInstanceId = jobId
         TeleportService:TeleportAsync(PlaceId, {LocalPlayer}, options)
@@ -499,15 +488,14 @@ local function teleportToServer(jobId)
     if okOpt then
         return true
     end
-    addLog("WARN", "Teleport options lỗi: " .. safeStr(errOpt))
-    task.wait(0.2)
-    local okPlain, errPlain = pcall(function()
+    task.wait(0.1)
+    local okPlain = pcall(function()
         TeleportService:TeleportAsync(PlaceId, {LocalPlayer})
     end)
     if okPlain then
         return true
     end
-    return false, safeStr(errPlain)
+    return false
 end
 
 pcall(function()
@@ -541,18 +529,21 @@ local function doHop()
             HopProgressAt = os.clock()
             if verdict == false then
                 blacklistAdd(target.Id)
-                addLog("WARN", "Server đã đông, bỏ qua")
             else
                 blacklistAdd(target.Id)
                 setStatus("Đã xác định server ít người")
-                task.wait(PRE_TELEPORT_DELAY)
+                if PRE_TELEPORT_DELAY > 0 then
+                    task.wait(PRE_TELEPORT_DELAY)
+                end
                 setStatus("Đang tạo cổng kết nối")
                 TeleportFailed = false
                 TeleportFailMsg = ""
-                local okCall, errCall = teleportToServer(target.Id)
+                teleportToServer(target.Id)
                 setStatus("Đang vào")
                 LastHopInfo = target.Id .. " | " .. tostring(target.Playing) .. " người | Ping " .. tostring(target.Ping)
-                task.wait(POST_TELEPORT_WAIT)
+                if POST_TELEPORT_WAIT > 0 then
+                    task.wait(POST_TELEPORT_WAIT)
+                end
                 HopProgressAt = os.clock()
                 local deadline = os.clock() + (JOBID_CONFIRM_TIMEOUT - POST_TELEPORT_WAIT)
                 local joined = false
@@ -565,7 +556,7 @@ local function doHop()
                     if TeleportFailed then
                         break
                     end
-                    task.wait(0.5)
+                    task.wait(0.25)
                 end
                 if joined then
                     FailStreak = 0
@@ -576,19 +567,23 @@ local function doHop()
                     return
                 end
                 FailStreak = FailStreak + 1
-                local reason = TeleportFailed and TeleportFailMsg or safeStr(errCall, "Timeout")
+                local reason = TeleportFailed and TeleportFailMsg or "Timeout"
                 local lowerReason = string.lower(reason)
                 if string.find(lowerReason, "771") or string.find(lowerReason, "no longer") then
-                    addLog("WARN", "Server đã đóng, chuyển server khác")
+                    addLog("WARN", "Server đã đóng")
                 end
-                addLog("ERR", "Hop thất bại (" .. attempts .. "): " .. reason)
+                addLog("ERR", "Hop thất bại (" .. attempts .. ")")
                 setStatus("Lỗi vào server, thử lại")
                 if FailStreak >= MAX_FAIL_STREAK then
                     blacklistReset()
                     FailStreak = 0
                 end
-                task.wait(0.5)
-                HopProgressAt = os.clock()
+                if #ServerQueue >= REFILL_AT then
+                    HopProgressAt = os.clock()
+                else
+                    task.wait(0.2)
+                    HopProgressAt = os.clock()
+                end
             end
         end
     end
@@ -600,7 +595,7 @@ end
 local function monitorLoop()
     while true do
         task.wait(MONITOR_STEP)
-        local ok, err = pcall(function()
+        local ok = pcall(function()
             if not AutoEnabled then
                 return
             end
@@ -619,23 +614,24 @@ local function monitorLoop()
                     end
                 end
                 if stillCrowded and #Players:GetPlayers() >= 3 and not IsHopping then
-                    if #ServerQueue == 0 then
+                    if #ServerQueue < REFILL_AT then
                         setStatus("Đang dò server...")
                         ensureScan()
                         local waitDeadline = os.clock() + SCAN_TIMEOUT
                         while IsScanning and os.clock() < waitDeadline do
-                            task.wait(0.5)
+                            task.wait(0.25)
                         end
                     end
                     if #ServerQueue > 0 and not IsHopping then
                         doHop()
                     end
                 end
+            else
+                if #ServerQueue < REFILL_AT and not IsScanning then
+                    ensureScan()
+                end
             end
         end)
-        if not ok then
-            addLog("ERR", "Monitor lỗi: " .. safeStr(err))
-        end
     end
 end
 
@@ -647,17 +643,14 @@ local function watchdogLoop()
                 ScanCancelled = true
                 IsScanning = false
                 setStatus("Quét bị kẹt, đã reset")
-                addLog("WARN", "Watchdog: reset scan kẹt")
             end
             if IsHopping and os.clock() - HopProgressAt > WATCHDOG_HOP_TIMEOUT then
                 IsHopping = false
                 setStatus("Hop bị kẹt, đã reset")
-                addLog("WARN", "Watchdog: reset hop kẹt")
             end
             if FillStartedAt > 0 and #ServerQueue < MIN_QUEUE and not IsScanning then
                 if os.clock() - FillStartedAt > WATCHDOG_FILL_TIMEOUT then
                     FillStartedAt = 0
-                    addLog("WARN", "Watchdog: refill kẹt, quét lại")
                     ensureScan()
                 end
             end
@@ -726,12 +719,7 @@ local function buildUi()
         end
     end)
     if not parent then
-        local okCore = pcall(function()
-            return CoreGuiService.Name
-        end)
-        if okCore then
-            parent = CoreGuiService
-        end
+        parent = CoreGuiService
     end
     if not parent and LocalPlayer then
         parent = LocalPlayer:WaitForChild("PlayerGui", 5)
@@ -770,7 +758,6 @@ local function buildUi()
     frameStroke.Parent = mainFrame
 
     local titleLabel = Instance.new("TextLabel")
-    titleLabel.Name = "TitleLabel"
     titleLabel.Size = UDim2.new(1, -20, 0, 28)
     titleLabel.Position = UDim2.new(0, 10, 0, 6)
     titleLabel.BackgroundTransparency = 1
@@ -782,7 +769,6 @@ local function buildUi()
     titleLabel.Parent = mainFrame
 
     local statusPill = Instance.new("TextLabel")
-    statusPill.Name = "StatusPill"
     statusPill.Size = UDim2.new(1, -20, 0, 26)
     statusPill.Position = UDim2.new(0, 10, 0, 38)
     statusPill.BackgroundColor3 = Color3.fromRGB(38, 36, 60)
@@ -790,7 +776,6 @@ local function buildUi()
     statusPill.TextColor3 = Color3.fromRGB(180, 220, 255)
     statusPill.Font = Enum.Font.GothamMedium
     statusPill.TextSize = 13
-    statusPill.TextScaled = false
     statusPill.Parent = mainFrame
 
     local pillCorner = Instance.new("UICorner")
@@ -798,7 +783,6 @@ local function buildUi()
     pillCorner.Parent = statusPill
 
     local infoLabel = Instance.new("TextLabel")
-    infoLabel.Name = "InfoLabel"
     infoLabel.Size = UDim2.new(1, -20, 0, 22)
     infoLabel.Position = UDim2.new(0, 10, 0, 70)
     infoLabel.BackgroundTransparency = 1
@@ -815,7 +799,6 @@ local function buildUi()
     local logButton = createButton(mainFrame, "LogButton", "Log: ON", UDim2.new(0.5, 5, 0, 136), Color3.fromRGB(80, 80, 95))
 
     local logLabel = Instance.new("TextLabel")
-    logLabel.Name = "LogLabel"
     logLabel.Size = UDim2.new(1, -20, 0, 30)
     logLabel.Position = UDim2.new(0, 10, 0, 172)
     logLabel.BackgroundTransparency = 1
@@ -839,12 +822,10 @@ local function buildUi()
             autoButton.Text = "AUTO: ON"
             autoButton.BackgroundColor3 = Color3.fromRGB(40, 140, 80)
             setStatus("Auto đã bật")
-            addLog("INFO", "Auto ON")
         else
             autoButton.Text = "AUTO: OFF"
             autoButton.BackgroundColor3 = Color3.fromRGB(120, 50, 60)
             setStatus("Auto đã tắt")
-            addLog("INFO", "Auto OFF")
         end
     end)
 
@@ -900,11 +881,9 @@ local function uiUpdateLoop()
     end
 end
 
-Players.PlayerAdded:Connect(function()
-    updateUiInfo()
-end)
-
+Players.PlayerAdded:Connect(updateUiInfo)
 Players.PlayerRemoving:Connect(function()
+    task.wait(0.2)
     updateUiInfo()
 end)
 
@@ -924,9 +903,6 @@ task.spawn(function()
     local probe = httpGet("https://games.roblox.com/v1/games/" .. tostring(PlaceId) .. "/servers/Public?limit=10")
     if not probe then
         setStatus("Lỗi HTTP, kiểm tra executor")
-        addLog("ERR", "HTTP không khả dụng")
-    else
-        addLog("INFO", "HTTP sẵn sàng")
     end
 end)
 
