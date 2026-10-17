@@ -56,55 +56,66 @@ RunService.Stepped:Connect(function()
     if hum then hum.Sit=false end
 end)
 
--- HÀM BAY MỚI (Dùng Velocity thay vì CFrame/Tween)
+-- HÀM BAY 1 PHÁT BẰNG VẬT LÝ (Velocity)
 local function fly(dest)
     if _G.AD_STOP then traveling=false; return end
     local char=plr.Character; if not char then traveling=false; return end
     local root=char:FindFirstChild("HumanoidRootPart"); if not root then traveling=false; return end
     
     local startPos = root.Position
-    local dist = (Vector3.new(dest.X, 0, dest.Z) - Vector3.new(startPos.X, 0, startPos.Z)).Magnitude
+    local targetPos = Vector3.new(dest.X, dest.Y + 3, dest.Z)
+    local dist = (targetPos - startPos).Magnitude
     
-    -- Tốc độ bay dựa trên khoảng cách (giới hạn tốc độ để tránh game anti-cheat)
-    local speed = 200 
-    if dist > 200 then speed = 250 end
-    if dist > 500 then speed = 300 end
-
-    -- 1. Nhấc lên độ cao vài studs (Tạo lực đẩy lên)
-    root.AssemblyLinearVelocity = Vector3.new(0, 50, 0)
-    task.wait(0.15)
+    if dist < 5 then traveling=false; return end
     
-    -- 2. Đẩy bay ngang về phía đích
-    local direction = (Vector3.new(dest.X, root.Position.Y, dest.Z) - root.Position).Unit
-    root.AssemblyLinearVelocity = direction * speed
+    -- Tính toán vận tốc bay (Giới hạn tốc độ an toàn để không bị anti-cheat kéo)
+    local speed = 150
+    if dist > 100 then speed = 200 end
+    if dist > 300 then speed = 250 end
     
-    -- 3. Đợi đến khi tới gần đích (X/Z)
-    local timeOut = tick() + (dist / speed) + 2
-    while tick() < timeOut do
+    local direction = (targetPos - startPos).Unit
+    local velocity = direction * speed
+    
+    -- 1. Cấp vận tốc bay 1 phát tới đích
+    root.AssemblyLinearVelocity = velocity
+    
+    -- 2. Liên tục kiểm tra khoảng cách để hãm phanh đúng lúc
+    local timeout = tick() + (dist / speed) + 2
+    
+    while tick() < timeout do
         if _G.AD_STOP then break end
-        local currRoot = char and char:FindFirstChild("HumanoidRootPart")
+        local currChar = plr.Character
+        local currRoot = currChar and currChar:FindFirstChild("HumanoidRootPart")
         if not currRoot then break end
         
-        local dist2D = (Vector3.new(dest.X, 0, dest.Z) - Vector3.new(currRoot.Position.X, 0, currRoot.Position.Z)).Magnitude
-        if dist2D <= 5 then
-            break -- Đã tới nơi
+        -- Nếu đã tới gần đích (cách 8 studs)
+        local d = (Vector3.new(dest.X, 0, dest.Z) - Vector3.new(currRoot.Position.X, 0, currRoot.Position.Z)).Magnitude
+        if d <= 8 then
+            break
         end
+        
+        -- Cập nhật lại hướng bay nếu nhân vật bị lệch (do va chạm trên không)
+        if tick() % 0.1 < 0.05 then
+            local newDir = (targetPos - currRoot.Position).Unit
+            currRoot.AssemblyLinearVelocity = newDir * speed
+        end
+        
         task.wait(0.05)
     end
     
-    -- 4. Thả rơi tự do (Ngắt vận tốc để trọng lực kéo xuống)
+    -- 3. Hãm phanh (Ngắt vận tốc để rơi tự do vài studs)
     local finalRoot = char and char:FindFirstChild("HumanoidRootPart")
     if finalRoot then
-        finalRoot.AssemblyLinearVelocity = Vector3.new(0, 0, 0) -- Phanh lại
+        finalRoot.AssemblyLinearVelocity = Vector3.zero
     end
     
-    -- Đợi rơi chạm đất
-    local dropTimeout = tick() + 2
+    -- 4. Chờ chạm đất
+    local dropTimeout = tick() + 1.5
     while tick() < dropTimeout do
         if _G.AD_STOP then break end
         local currRoot = char and char:FindFirstChild("HumanoidRootPart")
         if not currRoot then break end
-        if currRoot.Position.Y <= (dest.Y + 3) then
+        if currRoot.Position.Y <= (dest.Y + 4) then
             break
         end
         task.wait(0.05)
@@ -120,14 +131,12 @@ local function resetZone(target)
     local char=plr.Character; if not char then traveling=false; return end
     local root=char:FindFirstChild("HumanoidRootPart"); if not root then traveling=false; return end
     
-    -- Bay ra ngoài bằng Velocity
     local randomDir = Vector3.new(math.random(-1,1), 0, math.random(-1,1)).Unit
-    root.AssemblyLinearVelocity = Vector3.new(0, 80, 0) -- Nhấc lên
+    root.AssemblyLinearVelocity = Vector3.new(0, 80, 0)
     task.wait(0.15)
-    root.AssemblyLinearVelocity = randomDir * 150 -- Bay ra
+    root.AssemblyLinearVelocity = randomDir * 150
     task.wait(0.4)
     
-    -- Bay vào lại
     if not _G.AD_STOP then
         s1("Bay vào lại...",Color3.fromRGB(255,170,0))
         local dirIn = (Vector3.new(target.X, root.Position.Y, target.Z) - root.Position).Unit
@@ -135,14 +144,12 @@ local function resetZone(target)
         task.wait(0.4)
     end
     
-    -- Phanh và thả rơi
-    if root then
-        root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
-    end
-    local dropTimeout = tick() + 2
+    if root then root.AssemblyLinearVelocity = Vector3.zero end
+    
+    local dropTimeout = tick() + 1.5
     while tick() < dropTimeout do
         if _G.AD_STOP then break end
-        if root.Position.Y <= (target.Y + 3) then break end
+        if root.Position.Y <= (target.Y + 4) then break end
         task.wait(0.05)
     end
     
