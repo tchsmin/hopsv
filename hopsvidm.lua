@@ -4,6 +4,7 @@ _G.AD_STOP = false
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
 local rep = game:GetService("ReplicatedStorage")
 local vim = game:GetService("VirtualInputManager")
 local plr = Players.LocalPlayer
@@ -56,72 +57,21 @@ RunService.Stepped:Connect(function()
     if hum then hum.Sit=false end
 end)
 
--- HÀM BAY 1 PHÁT BẰNG VẬT LÝ (Velocity)
 local function fly(dest)
     if _G.AD_STOP then traveling=false; return end
     local char=plr.Character; if not char then traveling=false; return end
     local root=char:FindFirstChild("HumanoidRootPart"); if not root then traveling=false; return end
-    
-    local startPos = root.Position
-    local targetPos = Vector3.new(dest.X, dest.Y + 3, dest.Z)
-    local dist = (targetPos - startPos).Magnitude
-    
-    if dist < 5 then traveling=false; return end
-    
-    -- Tính toán vận tốc bay (Giới hạn tốc độ an toàn để không bị anti-cheat kéo)
-    local speed = 150
-    if dist > 100 then speed = 200 end
-    if dist > 300 then speed = 250 end
-    
-    local direction = (targetPos - startPos).Unit
-    local velocity = direction * speed
-    
-    -- 1. Cấp vận tốc bay 1 phát tới đích
-    root.AssemblyLinearVelocity = velocity
-    
-    -- 2. Liên tục kiểm tra khoảng cách để hãm phanh đúng lúc
-    local timeout = tick() + (dist / speed) + 2
-    
-    while tick() < timeout do
-        if _G.AD_STOP then break end
-        local currChar = plr.Character
-        local currRoot = currChar and currChar:FindFirstChild("HumanoidRootPart")
-        if not currRoot then break end
-        
-        -- Nếu đã tới gần đích (cách 8 studs)
-        local d = (Vector3.new(dest.X, 0, dest.Z) - Vector3.new(currRoot.Position.X, 0, currRoot.Position.Z)).Magnitude
-        if d <= 8 then
-            break
-        end
-        
-        -- Cập nhật lại hướng bay nếu nhân vật bị lệch (do va chạm trên không)
-        if tick() % 0.1 < 0.05 then
-            local newDir = (targetPos - currRoot.Position).Unit
-            currRoot.AssemblyLinearVelocity = newDir * speed
-        end
-        
-        task.wait(0.05)
-    end
-    
-    -- 3. Hãm phanh (Ngắt vận tốc để rơi tự do vài studs)
-    local finalRoot = char and char:FindFirstChild("HumanoidRootPart")
-    if finalRoot then
-        finalRoot.AssemblyLinearVelocity = Vector3.zero
-    end
-    
-    -- 4. Chờ chạm đất
-    local dropTimeout = tick() + 1.5
-    while tick() < dropTimeout do
-        if _G.AD_STOP then break end
-        local currRoot = char and char:FindFirstChild("HumanoidRootPart")
-        if not currRoot then break end
-        if currRoot.Position.Y <= (dest.Y + 4) then
-            break
-        end
-        task.wait(0.05)
-    end
-    
-    task.wait(0.05)
+    local sp=root.Position
+    local d=math.sqrt((dest.X-sp.X)^2+(dest.Z-sp.Z)^2)
+    local spd=d<50 and 80 or d<150 and 120 or d<300 and 180 or 260
+    local hi=math.max(sp.Y,dest.Y)+25
+    root.CFrame=CFrame.new(sp.X,hi,sp.Z)
+    task.wait(math.clamp(0.1+d/2000,0.08,0.35))
+    if _G.AD_STOP then traveling=false; return end
+    local t=TweenService:Create(root,TweenInfo.new(d/spd,Enum.EasingStyle.Linear),{CFrame=CFrame.new(dest.X,hi,dest.Z)})
+    t:Play(); t.Completed:Wait()
+    root.CFrame=CFrame.new(dest.X,dest.Y+3,dest.Z)
+    task.wait(0.08)
     traveling=false
 end
 
@@ -130,29 +80,19 @@ local function resetZone(target)
     s1("Stuck → bay ra...",Color3.fromRGB(255,60,60))
     local char=plr.Character; if not char then traveling=false; return end
     local root=char:FindFirstChild("HumanoidRootPart"); if not root then traveling=false; return end
-    
-    local randomDir = Vector3.new(math.random(-1,1), 0, math.random(-1,1)).Unit
-    root.AssemblyLinearVelocity = Vector3.new(0, 80, 0)
-    task.wait(0.15)
-    root.AssemblyLinearVelocity = randomDir * 150
-    task.wait(0.4)
-    
-    if not _G.AD_STOP then
-        s1("Bay vào lại...",Color3.fromRGB(255,170,0))
-        local dirIn = (Vector3.new(target.X, root.Position.Y, target.Z) - root.Position).Unit
-        root.AssemblyLinearVelocity = dirIn * 150
-        task.wait(0.4)
-    end
-    
-    if root then root.AssemblyLinearVelocity = Vector3.zero end
-    
-    local dropTimeout = tick() + 1.5
-    while tick() < dropTimeout do
-        if _G.AD_STOP then break end
-        if root.Position.Y <= (target.Y + 4) then break end
-        task.wait(0.05)
-    end
-    
+    local a=math.random()*math.pi*2
+    local hi=math.max(root.Position.Y,target.Y)+25
+    root.CFrame=CFrame.new(root.Position.X,hi,root.Position.Z)
+    task.wait(0.1)
+    local t1=TweenService:Create(root,TweenInfo.new(1,Enum.EasingStyle.Linear),
+        {CFrame=CFrame.new(target.X+math.cos(a)*30,hi,target.Z+math.sin(a)*30)})
+    t1:Play(); t1.Completed:Wait()
+    task.wait(0.3)
+    s1("Bay vào lại...",Color3.fromRGB(255,170,0))
+    local t2=TweenService:Create(root,TweenInfo.new(1,Enum.EasingStyle.Linear),
+        {CFrame=CFrame.new(target.X,hi,target.Z)})
+    t2:Play(); t2.Completed:Wait()
+    root.CFrame=CFrame.new(target.X,target.Y+3,target.Z)
     task.wait(0.1)
     traveling=false
 end
