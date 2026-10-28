@@ -1,23 +1,22 @@
 local CFG = {
     MinSpeed = 200,
-    MaxSpeed = 350,
+    MaxSpeed = 380,
     SpeedCurve = 750,
-    ClimbSpeed = 200,
-    CorrectionSpeed = 90,
-    CruiseHeight = 45,
-    LandingDropHeight = 12,
-    LandingDropSpeed = 140,
-    TerrainLookAhead = 200,
-    TerrainCheck = 0.15,
-    ObstacleClearance = 18,
-    MaxClimbBoost = 180,
+    CruiseHeight = 100,
+    ApproachDistance = 50,
+    ApproachSpeed = 55,
+    ApproachTolerance = 2,
+    DescendSpeed = 90,
+    ClimbSpeed = 90,
+    StandOffset = 3,
+    DropHeight = 10,
     ArriveXZ = 8,
     InteractDistance = 10,
     InteractVertical = 8,
     FlyPoll = 0.03,
     LandPoll = 0.01,
-    LandFallSpeed = 120,
     FlightTimeout = 60,
+    StallTimeout = 3,
     LandingTimeout = 10,
     TickInterval = 0.10,
     RemoteInterval = 0.45,
@@ -25,20 +24,22 @@ local CFG = {
     StateTimeout = 2,
     StateMaxAge = 0.5,
     StuckTimeout = 5,
-    ResetDistance = 30,
-    PickupResetDistance = 60,
+    ResetFarMin = 180,
+    ResetFarMax = 320,
     PickupResetHeight = 20,
     PickupDropStart = 3,
     PickupDropStep = 10,
     PickupDropMax = 33,
     PickupResetWait = 0.40,
+    DropJumpDelay = 0.12,
+    AfkJumpInterval = 15,
     PickupSettleTimeout = 8,
     JobRetryDelay = 4,
     AcceptX = 800,
     AcceptY = 425,
     PromptDelay = 0.60,
     ClickHold = 0.06,
-    JobConfirmTimeout = 3,
+    JobConfirmTimeout = 4,
 }
 
 local old = _G.AD_INSTANCE
@@ -51,6 +52,7 @@ _G.AD_STOP = true
 local Players = game:GetService("Players")
 local RS = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
 local player = Players.LocalPlayer
 if not player then
     warn("[AD] Không tìm thấy LocalPlayer.")
@@ -80,52 +82,146 @@ gui.IgnoreGuiInset = false
 gui.DisplayOrder = 100
 gui.Parent = playerGui
 
+local RIM = ColorSequence.new{
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 92, 168)),
+    ColorSequenceKeypoint.new(0.35, Color3.fromRGB(255, 82, 82)),
+    ColorSequenceKeypoint.new(0.65, Color3.fromRGB(255, 196, 84)),
+    ColorSequenceKeypoint.new(1, Color3.fromRGB(150, 120, 255)),
+}
+local ready, cardVisible = false, true
+local splashWanted, splashOpen = true, 0
+local splashTarget, splashValue = 0.05, 0.05
+local uiTime = 0
+local startupStarted = os.clock()
+local blobs = {}
+
+local function makeBlob(parent, size, color, transparency, x, y, phase, speed, range)
+    local blob = Instance.new("Frame")
+    blob.Name = "Blob"
+    blob.AnchorPoint = Vector2.new(0.5, 0.5)
+    blob.Position = UDim2.fromOffset(x, y)
+    blob.Size = UDim2.fromOffset(size, size)
+    blob.BackgroundColor3 = color
+    blob.BackgroundTransparency = transparency
+    blob.BorderSizePixel = 0
+    blob.ZIndex = 1
+    blob.Parent = parent
+    local blobCorner = Instance.new("UICorner")
+    blobCorner.CornerRadius = UDim.new(1, 0)
+    blobCorner.Parent = blob
+    local blobGradient = Instance.new("UIGradient")
+    blobGradient.Rotation = 45
+    blobGradient.Color = ColorSequence.new(color)
+    blobGradient.Transparency = NumberSequence.new{
+        NumberSequenceKeypoint.new(0, 0),
+        NumberSequenceKeypoint.new(1, 0.9),
+    }
+    blobGradient.Parent = blob
+    blobs[#blobs + 1] = {frame = blob, x = x, y = y, phase = phase, speed = speed, range = range}
+    return blob
+end
+
+local function makeGlass(parent, cornerRadius, background)
+    local glass = Instance.new("Frame")
+    glass.Name = "Glass"
+    glass.Position = UDim2.fromOffset(1, 1)
+    glass.Size = UDim2.new(1, -2, 1, -2)
+    glass.BackgroundColor3 = background
+    glass.BackgroundTransparency = 0.24
+    glass.BorderSizePixel = 0
+    glass.ZIndex = 2
+    glass.Parent = parent
+    local glassCorner = Instance.new("UICorner")
+    glassCorner.CornerRadius = UDim.new(0, cornerRadius)
+    glassCorner.Parent = glass
+    local glassGradient = Instance.new("UIGradient")
+    glassGradient.Rotation = 90
+    glassGradient.Color = ColorSequence.new{
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 255, 255)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(170, 160, 205)),
+    }
+    glassGradient.Transparency = NumberSequence.new{
+        NumberSequenceKeypoint.new(0, 0.08),
+        NumberSequenceKeypoint.new(1, 0.42),
+    }
+    glassGradient.Parent = glass
+    return glass
+end
+
 local shadow = Instance.new("Frame")
 shadow.Name = "Shadow"
-shadow.Position = UDim2.fromOffset(10, 10)
-shadow.Size = UDim2.fromOffset(208, 56)
+shadow.Position = UDim2.fromOffset(18, 18)
+shadow.Size = UDim2.fromOffset(344, 124)
 shadow.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-shadow.BackgroundTransparency = 0.58
+shadow.BackgroundTransparency = 0.45
 shadow.BorderSizePixel = 0
+shadow.Visible = false
 shadow.ZIndex = 0
 shadow.Parent = gui
 local shadowCorner = Instance.new("UICorner")
-shadowCorner.CornerRadius = UDim.new(0, 10)
+shadowCorner.CornerRadius = UDim.new(0, 18)
 shadowCorner.Parent = shadow
 
 local frame = Instance.new("Frame")
 frame.Name = "Card"
-frame.Position = UDim2.fromOffset(8, 8)
-frame.Size = UDim2.fromOffset(208, 56)
-frame.BackgroundColor3 = Color3.fromRGB(23, 20, 35)
+frame.Position = UDim2.fromOffset(10, 10)
+frame.Size = UDim2.fromOffset(344, 124)
+frame.BackgroundColor3 = Color3.fromRGB(30, 25, 44)
 frame.BorderSizePixel = 0
 frame.ClipsDescendants = true
+frame.Active = true
+frame.Visible = false
 frame.ZIndex = 1
 frame.Parent = gui
 local frameCorner = Instance.new("UICorner")
-frameCorner.CornerRadius = UDim.new(0, 8)
+frameCorner.CornerRadius = UDim.new(0, 16)
 frameCorner.Parent = frame
 local frameStroke = Instance.new("UIStroke")
-frameStroke.Color = Color3.fromRGB(108, 88, 160)
-frameStroke.Transparency = 0.45
-frameStroke.Thickness = 1
+frameStroke.Color = Color3.fromRGB(255, 255, 255)
+frameStroke.Transparency = 0.1
+frameStroke.Thickness = 1.4
 frameStroke.Parent = frame
-local frameGradient = Instance.new("UIGradient")
-frameGradient.Rotation = 90
-frameGradient.Color = ColorSequence.new{
-    ColorSequenceKeypoint.new(0, Color3.fromRGB(35, 29, 54)),
-    ColorSequenceKeypoint.new(1, Color3.fromRGB(16, 14, 24)),
+local cardStrokeGradient = Instance.new("UIGradient")
+cardStrokeGradient.Color = RIM
+cardStrokeGradient.Parent = frameStroke
+
+makeBlob(frame, 238, Color3.fromRGB(255, 92, 168), 0.42, 32, -42, 0.4, 0.35, 12)
+makeBlob(frame, 188, Color3.fromRGB(255, 82, 82), 0.55, 188, 6, 2.1, 0.42, 10)
+makeBlob(frame, 162, Color3.fromRGB(255, 196, 84), 0.68, 336, 116, 4.2, 0.5, 14)
+makeBlob(frame, 188, Color3.fromRGB(140, 100, 255), 0.62, 318, -10, 1.2, 0.38, 11)
+
+makeGlass(frame, 15, Color3.fromRGB(20, 17, 30))
+
+local accent = Instance.new("Frame")
+accent.Name = "Accent"
+accent.Position = UDim2.fromOffset(20, 44)
+accent.Size = UDim2.new(1, -40, 0, 2)
+accent.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+accent.BorderSizePixel = 0
+accent.ZIndex = 4
+accent.Parent = frame
+local accentCorner = Instance.new("UICorner")
+accentCorner.CornerRadius = UDim.new(1, 0)
+accentCorner.Parent = accent
+local accentGradient = Instance.new("UIGradient")
+accentGradient.Color = ColorSequence.new(Color3.fromRGB(186, 167, 237))
+accentGradient.Transparency = NumberSequence.new{
+    NumberSequenceKeypoint.new(0, 1),
+    NumberSequenceKeypoint.new(0.2, 0.2),
+    NumberSequenceKeypoint.new(0.5, 0),
+    NumberSequenceKeypoint.new(0.8, 0.2),
+    NumberSequenceKeypoint.new(1, 1),
 }
-frameGradient.Parent = frame
+accentGradient.Parent = accent
 
 local dotGlow = Instance.new("Frame")
 dotGlow.Name = "StatusGlow"
-dotGlow.Position = UDim2.fromOffset(7, 7)
-dotGlow.Size = UDim2.fromOffset(12, 12)
+dotGlow.Position = UDim2.fromOffset(20, 17)
+dotGlow.Size = UDim2.fromOffset(16, 16)
 dotGlow.BackgroundColor3 = Color3.fromRGB(186, 167, 237)
-dotGlow.BackgroundTransparency = 0.82
+dotGlow.BackgroundTransparency = 0.78
 dotGlow.BorderSizePixel = 0
-dotGlow.ZIndex = 2
+dotGlow.ZIndex = 5
 dotGlow.Parent = frame
 local dotGlowCorner = Instance.new("UICorner")
 dotGlowCorner.CornerRadius = UDim.new(1, 0)
@@ -133,42 +229,51 @@ dotGlowCorner.Parent = dotGlow
 
 local dot = Instance.new("Frame")
 dot.Name = "StatusDot"
-dot.Position = UDim2.fromOffset(10, 10)
-dot.Size = UDim2.fromOffset(6, 6)
+dot.Position = UDim2.fromOffset(24, 21)
+dot.Size = UDim2.fromOffset(8, 8)
 dot.BackgroundColor3 = Color3.fromRGB(186, 167, 237)
 dot.BorderSizePixel = 0
-dot.ZIndex = 3
+dot.ZIndex = 6
 dot.Parent = frame
 local dotCorner = Instance.new("UICorner")
 dotCorner.CornerRadius = UDim.new(1, 0)
 dotCorner.Parent = dot
 
 local title = Instance.new("TextLabel")
-title.Position = UDim2.fromOffset(22, 4)
-title.Size = UDim2.new(1, -70, 0, 18)
+title.Name = "Title"
+title.Position = UDim2.fromOffset(40, 14)
+title.Size = UDim2.fromOffset(168, 22)
 title.BackgroundTransparency = 1
 title.Text = "AUTO DELIVERY"
 title.Font = Enum.Font.GothamBold
-title.TextSize = 9
-title.TextColor3 = Color3.fromRGB(239, 233, 255)
+title.TextSize = 14
+title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextXAlignment = Enum.TextXAlignment.Left
-title.ZIndex = 2
+title.TextYAlignment = Enum.TextYAlignment.Center
+title.ZIndex = 5
 title.Parent = frame
+local titleGradient = Instance.new("UIGradient")
+titleGradient.Color = ColorSequence.new{
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 255, 255)),
+    ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 176, 208)),
+}
+titleGradient.Rotation = 12
+titleGradient.Parent = title
 
 local stopButton = Instance.new("TextButton")
 stopButton.Name = "StopButton"
-stopButton.Position = UDim2.fromOffset(161, 4)
-stopButton.Size = UDim2.fromOffset(40, 18)
+stopButton.Position = UDim2.fromOffset(214, 13)
+stopButton.Size = UDim2.fromOffset(76, 28)
 stopButton.BackgroundColor3 = Color3.fromRGB(122, 43, 60)
 stopButton.BorderSizePixel = 0
 stopButton.Text = "STOP"
 stopButton.Font = Enum.Font.GothamBold
-stopButton.TextSize = 8
+stopButton.TextSize = 11
 stopButton.TextColor3 = Color3.fromRGB(255, 223, 230)
-stopButton.ZIndex = 3
+stopButton.ZIndex = 6
 stopButton.Parent = frame
 local stopCorner = Instance.new("UICorner")
-stopCorner.CornerRadius = UDim.new(0, 5)
+stopCorner.CornerRadius = UDim.new(0, 8)
 stopCorner.Parent = stopButton
 local stopStroke = Instance.new("UIStroke")
 stopStroke.Color = Color3.fromRGB(255, 132, 154)
@@ -176,54 +281,291 @@ stopStroke.Transparency = 0.55
 stopStroke.Thickness = 1
 stopStroke.Parent = stopButton
 
+local toggleButton = Instance.new("TextButton")
+toggleButton.Name = "ToggleButton"
+toggleButton.Position = UDim2.fromOffset(298, 15)
+toggleButton.Size = UDim2.fromOffset(30, 24)
+toggleButton.BackgroundColor3 = Color3.fromRGB(52, 43, 72)
+toggleButton.BackgroundTransparency = 0.15
+toggleButton.BorderSizePixel = 0
+toggleButton.Text = "–"
+toggleButton.Font = Enum.Font.GothamBold
+toggleButton.TextSize = 14
+toggleButton.TextColor3 = Color3.fromRGB(226, 216, 250)
+toggleButton.ZIndex = 6
+toggleButton.Parent = frame
+local toggleCorner = Instance.new("UICorner")
+toggleCorner.CornerRadius = UDim.new(0, 8)
+toggleCorner.Parent = toggleButton
+local toggleStroke = Instance.new("UIStroke")
+toggleStroke.Color = Color3.fromRGB(190, 170, 240)
+toggleStroke.Transparency = 0.6
+toggleStroke.Thickness = 1
+toggleStroke.Parent = toggleButton
+
 local l1 = Instance.new("TextLabel")
-l1.Position = UDim2.fromOffset(10, 23)
-l1.Size = UDim2.new(1, -20, 0, 15)
+l1.Position = UDim2.fromOffset(20, 50)
+l1.Size = UDim2.new(1, -40, 0, 20)
 l1.BackgroundTransparency = 1
 l1.TextXAlignment = Enum.TextXAlignment.Left
+l1.TextYAlignment = Enum.TextYAlignment.Center
 l1.TextTruncate = Enum.TextTruncate.AtEnd
 l1.Font = Enum.Font.GothamBold
-l1.TextSize = 11
+l1.TextSize = 14
 l1.Text = ""
-l1.ZIndex = 2
+l1.ZIndex = 5
 l1.Parent = frame
 
 local l2 = Instance.new("TextLabel")
-l2.Position = UDim2.fromOffset(10, 38)
-l2.Size = UDim2.new(1, -20, 0, 11)
+l2.Position = UDim2.fromOffset(20, 74)
+l2.Size = UDim2.new(1, -40, 0, 16)
 l2.BackgroundTransparency = 1
 l2.TextXAlignment = Enum.TextXAlignment.Left
+l2.TextYAlignment = Enum.TextYAlignment.Center
 l2.TextTruncate = Enum.TextTruncate.AtEnd
 l2.Font = Enum.Font.Gotham
-l2.TextSize = 9
-l2.TextColor3 = Color3.fromRGB(146, 138, 168)
+l2.TextSize = 11
+l2.TextColor3 = Color3.fromRGB(170, 162, 196)
 l2.Text = ""
-l2.ZIndex = 2
+l2.ZIndex = 5
 l2.Parent = frame
 
-local barBack = Instance.new("Frame")
-barBack.Name = "ProgressBack"
-barBack.Position = UDim2.fromOffset(10, 51)
-barBack.Size = UDim2.new(1, -20, 0, 2)
-barBack.BackgroundColor3 = Color3.fromRGB(47, 40, 66)
-barBack.BorderSizePixel = 0
-barBack.ZIndex = 2
-barBack.Parent = frame
-local barBackCorner = Instance.new("UICorner")
-barBackCorner.CornerRadius = UDim.new(1, 0)
-barBackCorner.Parent = barBack
+local barTrack = Instance.new("Frame")
+barTrack.Name = "ProgressTrack"
+barTrack.Position = UDim2.fromOffset(20, 104)
+barTrack.Size = UDim2.new(1, -40, 0, 5)
+barTrack.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+barTrack.BackgroundTransparency = 0.88
+barTrack.BorderSizePixel = 0
+barTrack.ClipsDescendants = true
+barTrack.ZIndex = 5
+barTrack.Parent = frame
+local barTrackCorner = Instance.new("UICorner")
+barTrackCorner.CornerRadius = UDim.new(1, 0)
+barTrackCorner.Parent = barTrack
 
 local progressFill = Instance.new("Frame")
 progressFill.Name = "ProgressFill"
-progressFill.Position = UDim2.fromOffset(10, 51)
-progressFill.Size = UDim2.new(0, 0, 0, 2)
-progressFill.BackgroundColor3 = Color3.fromRGB(186, 167, 237)
+progressFill.Position = UDim2.fromOffset(0, 0)
+progressFill.Size = UDim2.new(0, 0, 1, 0)
+progressFill.BackgroundColor3 = Color3.fromRGB(236, 220, 255)
 progressFill.BorderSizePixel = 0
-progressFill.ZIndex = 3
-progressFill.Parent = frame
+progressFill.ZIndex = 6
+progressFill.Parent = barTrack
 local fillCorner = Instance.new("UICorner")
 fillCorner.CornerRadius = UDim.new(1, 0)
 fillCorner.Parent = progressFill
+local fillGradient = Instance.new("UIGradient")
+fillGradient.Color = ColorSequence.new{
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 160, 205)),
+    ColorSequenceKeypoint.new(1, Color3.fromRGB(190, 170, 255)),
+}
+fillGradient.Parent = progressFill
+
+local floatShadow = Instance.new("Frame")
+floatShadow.Name = "FloatShadow"
+floatShadow.Position = UDim2.fromOffset(16, 17)
+floatShadow.Size = UDim2.fromOffset(46, 46)
+floatShadow.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+floatShadow.BackgroundTransparency = 0.5
+floatShadow.BorderSizePixel = 0
+floatShadow.Visible = false
+floatShadow.ZIndex = 0
+floatShadow.Parent = gui
+local floatShadowCorner = Instance.new("UICorner")
+floatShadowCorner.CornerRadius = UDim.new(0, 15)
+floatShadowCorner.Parent = floatShadow
+
+local floatButton = Instance.new("TextButton")
+floatButton.Name = "FloatButton"
+floatButton.Position = UDim2.fromOffset(14, 14)
+floatButton.Size = UDim2.fromOffset(46, 46)
+floatButton.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+floatButton.BorderSizePixel = 0
+floatButton.Text = "AD"
+floatButton.Font = Enum.Font.GothamBlack
+floatButton.TextSize = 13
+floatButton.TextColor3 = Color3.fromRGB(30, 24, 42)
+floatButton.Visible = false
+floatButton.ZIndex = 2
+floatButton.Parent = gui
+local floatCorner = Instance.new("UICorner")
+floatCorner.CornerRadius = UDim.new(0, 14)
+floatCorner.Parent = floatButton
+local floatStroke = Instance.new("UIStroke")
+floatStroke.Color = Color3.fromRGB(255, 255, 255)
+floatStroke.Transparency = 0.25
+floatStroke.Thickness = 1.4
+floatStroke.Parent = floatButton
+local floatStrokeGradient = Instance.new("UIGradient")
+floatStrokeGradient.Color = RIM
+floatStrokeGradient.Parent = floatStroke
+local floatGradient = Instance.new("UIGradient")
+floatGradient.Rotation = 60
+floatGradient.Color = RIM
+floatGradient.Parent = floatButton
+
+local groupCreated, splashGroup = pcall(Instance.new, "CanvasGroup")
+if not groupCreated or not splashGroup then
+    splashGroup = Instance.new("Frame")
+end
+splashGroup.Name = "Splash"
+splashGroup.AnchorPoint = Vector2.new(0.5, 0.5)
+splashGroup.Position = UDim2.fromScale(0.5, 0.5)
+splashGroup.Size = UDim2.fromOffset(340, 250)
+splashGroup.BackgroundTransparency = 1
+splashGroup.Visible = true
+splashGroup.ZIndex = 10
+splashGroup.Parent = gui
+local splashGroupFade = pcall(function() splashGroup.GroupTransparency = 1 end)
+
+local splashShadow = Instance.new("Frame")
+splashShadow.Name = "SplashShadow"
+splashShadow.Position = UDim2.fromOffset(8, 10)
+splashShadow.Size = UDim2.fromOffset(328, 232)
+splashShadow.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+splashShadow.BackgroundTransparency = 0.4
+splashShadow.BorderSizePixel = 0
+splashShadow.ZIndex = 10
+splashShadow.Parent = splashGroup
+local splashShadowCorner = Instance.new("UICorner")
+splashShadowCorner.CornerRadius = UDim.new(0, 20)
+splashShadowCorner.Parent = splashShadow
+
+local splashCard = Instance.new("Frame")
+splashCard.Name = "SplashCard"
+splashCard.Position = UDim2.fromOffset(0, 0)
+splashCard.Size = UDim2.fromOffset(328, 232)
+splashCard.BackgroundColor3 = Color3.fromRGB(30, 25, 44)
+splashCard.BorderSizePixel = 0
+splashCard.ClipsDescendants = true
+splashCard.ZIndex = 11
+splashCard.Parent = splashGroup
+local splashCorner = Instance.new("UICorner")
+splashCorner.CornerRadius = UDim.new(0, 18)
+splashCorner.Parent = splashCard
+local splashStroke = Instance.new("UIStroke")
+splashStroke.Color = Color3.fromRGB(255, 255, 255)
+splashStroke.Transparency = 0.08
+splashStroke.Thickness = 1.4
+splashStroke.Parent = splashCard
+local splashStrokeGradient = Instance.new("UIGradient")
+splashStrokeGradient.Color = RIM
+splashStrokeGradient.Parent = splashStroke
+
+makeBlob(splashCard, 240, Color3.fromRGB(255, 92, 168), 0.4, 30, -30, 0.8, 0.28, 14)
+makeBlob(splashCard, 200, Color3.fromRGB(255, 82, 82), 0.5, 150, 40, 2.4, 0.32, 12)
+makeBlob(splashCard, 170, Color3.fromRGB(255, 196, 84), 0.55, 280, 200, 4.7, 0.36, 16)
+makeBlob(splashCard, 210, Color3.fromRGB(140, 100, 255), 0.5, 300, -20, 1.6, 0.3, 12)
+
+makeGlass(splashCard, 17, Color3.fromRGB(20, 17, 30))
+
+local splashTitle = Instance.new("TextLabel")
+splashTitle.Name = "SplashTitle"
+splashTitle.Position = UDim2.fromOffset(0, 38)
+splashTitle.Size = UDim2.new(1, 0, 0, 34)
+splashTitle.BackgroundTransparency = 1
+splashTitle.Text = "AUTO DELIVERY"
+splashTitle.Font = Enum.Font.GothamBlack
+splashTitle.TextSize = 24
+splashTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
+splashTitle.TextXAlignment = Enum.TextXAlignment.Center
+splashTitle.TextYAlignment = Enum.TextYAlignment.Center
+splashTitle.ZIndex = 13
+splashTitle.Parent = splashCard
+local splashTitleGradient = Instance.new("UIGradient")
+splashTitleGradient.Color = ColorSequence.new{
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 92, 168)),
+    ColorSequenceKeypoint.new(0.45, Color3.fromRGB(255, 82, 82)),
+    ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 196, 84)),
+}
+splashTitleGradient.Rotation = 12
+splashTitleGradient.Parent = splashTitle
+
+local splashSubtitle = Instance.new("TextLabel")
+splashSubtitle.Name = "SplashSubtitle"
+splashSubtitle.Position = UDim2.fromOffset(0, 76)
+splashSubtitle.Size = UDim2.new(1, 0, 0, 14)
+splashSubtitle.BackgroundTransparency = 1
+splashSubtitle.Text = "DRIVING EMPIRE · AUTO FARM"
+splashSubtitle.Font = Enum.Font.Gotham
+splashSubtitle.TextSize = 10
+splashSubtitle.TextColor3 = Color3.fromRGB(190, 182, 214)
+splashSubtitle.TextXAlignment = Enum.TextXAlignment.Center
+splashSubtitle.TextYAlignment = Enum.TextYAlignment.Center
+splashSubtitle.ZIndex = 13
+splashSubtitle.Parent = splashCard
+
+local splashStage = Instance.new("TextLabel")
+splashStage.Name = "SplashStage"
+splashStage.Position = UDim2.fromOffset(20, 106)
+splashStage.Size = UDim2.new(1, -40, 0, 18)
+splashStage.BackgroundTransparency = 1
+splashStage.Text = "Đang khởi động..."
+splashStage.Font = Enum.Font.GothamBold
+splashStage.TextSize = 12
+splashStage.TextColor3 = Color3.fromRGB(255, 255, 255)
+splashStage.TextXAlignment = Enum.TextXAlignment.Center
+splashStage.TextYAlignment = Enum.TextYAlignment.Center
+splashStage.TextTruncate = Enum.TextTruncate.AtEnd
+splashStage.ZIndex = 13
+splashStage.Parent = splashCard
+
+local splashBarBack = Instance.new("Frame")
+splashBarBack.Name = "SplashBarBack"
+splashBarBack.Position = UDim2.fromOffset(36, 142)
+splashBarBack.Size = UDim2.new(1, -72, 0, 6)
+splashBarBack.BackgroundColor3 = Color3.fromRGB(48, 41, 66)
+splashBarBack.BorderSizePixel = 0
+splashBarBack.ZIndex = 13
+splashBarBack.Parent = splashCard
+local splashBarCorner = Instance.new("UICorner")
+splashBarCorner.CornerRadius = UDim.new(1, 0)
+splashBarCorner.Parent = splashBarBack
+
+local splashFill = Instance.new("Frame")
+splashFill.Name = "SplashFill"
+splashFill.Position = UDim2.fromOffset(36, 142)
+splashFill.Size = UDim2.new(0, 0, 0, 6)
+splashFill.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+splashFill.BorderSizePixel = 0
+splashFill.ZIndex = 14
+splashFill.Parent = splashCard
+local splashFillCorner = Instance.new("UICorner")
+splashFillCorner.CornerRadius = UDim.new(1, 0)
+splashFillCorner.Parent = splashFill
+local splashFillGradient = Instance.new("UIGradient")
+splashFillGradient.Rotation = 0
+splashFillGradient.Color = RIM
+splashFillGradient.Parent = splashFill
+
+local splashPercent = Instance.new("TextLabel")
+splashPercent.Name = "SplashPercent"
+splashPercent.Position = UDim2.fromOffset(36, 152)
+splashPercent.Size = UDim2.new(1, -72, 0, 14)
+splashPercent.BackgroundTransparency = 1
+splashPercent.Text = "5%"
+splashPercent.Font = Enum.Font.Gotham
+splashPercent.TextSize = 10
+splashPercent.TextColor3 = Color3.fromRGB(196, 188, 220)
+splashPercent.TextXAlignment = Enum.TextXAlignment.Right
+splashPercent.TextYAlignment = Enum.TextYAlignment.Center
+splashPercent.ZIndex = 13
+splashPercent.Parent = splashCard
+
+local splashFooter = Instance.new("TextLabel")
+splashFooter.Name = "SplashFooter"
+splashFooter.Position = UDim2.fromOffset(0, 184)
+splashFooter.Size = UDim2.new(1, 0, 0, 12)
+splashFooter.BackgroundTransparency = 1
+splashFooter.Text = "Vui lòng chờ trong giây lát"
+splashFooter.Font = Enum.Font.Gotham
+splashFooter.TextSize = 9
+splashFooter.TextColor3 = Color3.fromRGB(128, 120, 152)
+splashFooter.TextXAlignment = Enum.TextXAlignment.Center
+splashFooter.TextYAlignment = Enum.TextYAlignment.Center
+splashFooter.ZIndex = 13
+splashFooter.Parent = splashCard
 
 local COLOR = {
     idle = Color3.fromRGB(186, 167, 237),
@@ -245,13 +587,12 @@ end
 local function detail(text)
     if gui.Parent and l2.Text ~= text then l2.Text = text end
 end
-local function setBar(fraction, color)
+local function setBar(fraction)
     if not gui.Parent then return end
     fraction = tonumber(fraction) or 0
     if fraction ~= fraction then fraction = 0 end
     fraction = math.clamp(fraction, 0, 1)
-    progressFill.Size = UDim2.new(fraction, 0, 0, 2)
-    if color then progressFill.BackgroundColor3 = color end
+    progressFill.Size = UDim2.new(fraction, 0, 1, 0)
 end
 local function setRunButton(running)
     if not (stopButton and stopButton.Parent) then return end
@@ -271,11 +612,79 @@ local function setRunButton(running)
         stopStroke.Transparency = 0.45
     end
 end
+local function setSplash(text, fraction)
+    if not (splashStage and splashStage.Parent) then return end
+    if text and splashStage.Text ~= text then splashStage.Text = text end
+    fraction = tonumber(fraction) or 0
+    if fraction ~= fraction then fraction = 0 end
+    splashTarget = math.clamp(fraction, 0, 1)
+end
+local function setCardVisible(value)
+    cardVisible = value and true or false
+    if not gui.Parent then return end
+    frame.Visible = cardVisible
+    shadow.Visible = cardVisible
+    local floating = (not cardVisible) and ready
+    if floating then
+        local x = frame.Position.X.Offset + 4
+        local y = frame.Position.Y.Offset + 4
+        local screen = gui.AbsoluteSize
+        if screen.X > 0 and screen.Y > 0 then
+            x = math.clamp(x, 8, screen.X - 58)
+            y = math.clamp(y, 8, screen.Y - 58)
+        end
+        floatButton.Position = UDim2.fromOffset(x, y)
+        floatShadow.Position = UDim2.fromOffset(x + 2, y + 3)
+    end
+    floatButton.Visible = floating
+    floatShadow.Visible = floating
+end
+local function hideSplash()
+    ready = true
+    splashWanted = false
+    setCardVisible(true)
+end
+local function animateUI(dt)
+    if not gui.Parent then return end
+    dt = math.min(tonumber(dt) or 0.016, 0.1)
+    if dt < 0 then dt = 0 end
+    uiTime = uiTime + dt
+    for _, blob in ipairs(blobs) do
+        local blobFrame = blob.frame
+        if blobFrame and blobFrame.Parent then
+            local px = blob.x + math.sin(uiTime * blob.speed + blob.phase) * blob.range
+            local py = blob.y + math.cos(uiTime * blob.speed * 0.85 + blob.phase) * blob.range * 0.7
+            blobFrame.Position = UDim2.fromOffset(px, py)
+        end
+    end
+    cardStrokeGradient.Rotation = (uiTime * 40) % 360
+    splashStrokeGradient.Rotation = 360 - (uiTime * 55) % 360
+    floatStrokeGradient.Rotation = (uiTime * 50) % 360
+    titleGradient.Rotation = 12 + math.sin(uiTime * 0.7) * 18
+    splashTitleGradient.Rotation = 12 + math.sin(uiTime * 0.5) * 24
+    splashOpen = splashOpen + ((splashWanted and 1 or 0) - splashOpen) * math.min(1, dt * 9)
+    local open = math.clamp(splashOpen, 0, 1)
+    if splashGroupFade then splashGroup.GroupTransparency = 1 - open end
+    splashGroup.Position = UDim2.new(0.5, 0, 0.5, (1 - open) * 26)
+    splashGroup.Visible = open > 0.01
+    splashValue = splashValue + (splashTarget - splashValue) * math.min(1, dt * 7)
+    local value = math.clamp(splashValue, 0, 1)
+    splashFill.Size = UDim2.new(value, 0, 0, 6)
+    splashPercent.Text = string.format("%d%%", math.floor(value * 100 + 0.5))
+end
 
-local stopping, traveling, startingJob, landing = false, false, false, false
+local stopping, traveling, startingJob = false, false, false
 local canResume, disposed = false, false
 local noclip = false
 local connections, partConnections, parts, pending = {}, {}, {}, {}
+do
+    local uiSignal = RunService.RenderStepped or RunService.Heartbeat
+    if uiSignal and type(uiSignal.Connect) == "function" then
+        connections[#connections + 1] = uiSignal:Connect(function(dt)
+            animateUI(dt)
+        end)
+    end
+end
 local character, humanoid, root, worker, lift, liftAttachment
 local flightControl, flightHumanoid, savedPlatformStand, savedAutoRotate
 local jt, pickupRemote, completeRemote, vim
@@ -284,7 +693,11 @@ local mousePressed = false
 local nextTick, nextRemote, nextJob, nextPadScan = 0, 0, 0, 0
 local phase, lastItems, lastCapacity, lastPickup, lastDestination
 local pickStuck, destStuck
+local pickupSince, destinationSince
 local pickAttempts, pickDropOffset, pickBaseItems = 0, CFG.PickupDropStart, nil
+local destAttempts, destDropOffset = 0, CFG.PickupDropStart
+local nextAfkJump = 0
+local routeProgress = nil
 local stateRequest, stateCache, nextStateRead
 nextStateRead = 0
 if type(resumeProgress) == "table" then
@@ -329,6 +742,19 @@ end
 local function removeLift()
     if lift then lift:Destroy(); lift = nil end
     if liftAttachment then liftAttachment:Destroy(); liftAttachment = nil end
+end
+local function ensureLift(movingRoot)
+    removeLift()
+    liftAttachment = Instance.new("Attachment")
+    liftAttachment.Name = "AD_LiftAttachment"
+    liftAttachment.Parent = movingRoot
+    lift = Instance.new("VectorForce")
+    lift.Name = "AD_GravityCompensation"
+    lift.Attachment0 = liftAttachment
+    lift.RelativeTo = Enum.ActuatorRelativeTo.World
+    lift.ApplyAtCenterOfMass = true
+    lift.Force = Vector3.new(0, movingRoot.AssemblyMass * workspace.Gravity, 0)
+    lift.Parent = movingRoot
 end
 local function beginFlightControl()
     if not validCharacter() then return false end
@@ -376,7 +802,6 @@ end
 local function finishMotion()
     removeLift()
     endFlightControl(false)
-    landing = false
     noclip = false
     setCollisions(true)
     if root and root.Parent then root.AssemblyLinearVelocity = Vector3.zero end
@@ -384,8 +809,12 @@ end
 local function resetProgress()
     phase, lastItems, lastCapacity, lastPickup, lastDestination = nil, nil, nil, nil, nil
     pickStuck, destStuck = nil, nil
+    pickupSince, destinationSince = nil, nil
     pickAttempts, pickDropOffset, pickBaseItems = 0, CFG.PickupDropStart, nil
+    destAttempts, destDropOffset = 0, CFG.PickupDropStart
+    nextAfkJump = 0
     nextRemote = 0
+    routeProgress = nil
     session.Progress = nil
 end
 
@@ -421,18 +850,19 @@ function session.Stop(reason, removeUI)
         return
     end
     stopping = true
+    if not ready then hideSplash() end
     if _G.AD_INSTANCE == session then _G.AD_STOP = true end
     haltRuntime()
     if canResume and not disposed and not removeUI then
         status(reason or "Đã dừng", COLOR.error)
-        setBar(0, COLOR.error)
+        setBar(0)
         setRunButton(false)
         detail("Bấm START để chạy tiếp")
         return
     end
     shutdown()
     status(reason or "Đã dừng", COLOR.error)
-    setBar(0, COLOR.error)
+    setBar(0)
     if stopButton and stopButton.Parent then
         stopButton.Text = "STOPPED"
         stopButton.Active = false
@@ -454,7 +884,7 @@ function session.Start()
     resetProgress()
     status("Đang chạy...", COLOR.start)
     detail("")
-    setBar(0, COLOR.idle)
+    setBar(0)
     setRunButton(true)
 end
 
@@ -464,6 +894,67 @@ if stopButton then
             session.Start()
         else
             session.Stop("Đã dừng từ UI")
+        end
+    end)
+end
+if toggleButton then
+    connections[#connections + 1] = toggleButton.Activated:Connect(function()
+        if ready then setCardVisible(false) end
+    end)
+end
+if floatButton then
+    connections[#connections + 1] = floatButton.Activated:Connect(function()
+        setCardVisible(true)
+    end)
+end
+
+local dragStart, dragOrigin
+local function overControl(position)
+    for _, control in ipairs({stopButton, toggleButton}) do
+        local controlOrigin = control.AbsolutePosition
+        local controlSize = control.AbsoluteSize
+        if position.X >= controlOrigin.X and position.X <= controlOrigin.X + controlSize.X
+            and position.Y >= controlOrigin.Y and position.Y <= controlOrigin.Y + controlSize.Y then
+            return true
+        end
+    end
+    return false
+end
+local function moveCard(x, y)
+    local screen = gui.AbsoluteSize
+    local cardSize = frame.AbsoluteSize
+    if screen.X > 0 and screen.Y > 0 and cardSize.X > 0 and cardSize.Y > 0 then
+        x = math.clamp(x, 8, screen.X - cardSize.X - 8)
+        y = math.clamp(y, 8, screen.Y - cardSize.Y - 8)
+    end
+    frame.Position = UDim2.fromOffset(x, y)
+    shadow.Position = UDim2.fromOffset(x + 8, y + 8)
+end
+local function canStartDrag(position)
+    if not frame.Visible then return false end
+    local origin = frame.AbsolutePosition
+    local size = frame.AbsoluteSize
+    return position.X >= origin.X and position.X <= origin.X + size.X
+        and position.Y >= origin.Y and position.Y <= origin.Y + size.Y
+        and not overControl(position)
+end
+if UserInputService then
+    connections[#connections + 1] = UserInputService.InputBegan:Connect(function(input)
+        local kind = input.UserInputType
+        if kind ~= Enum.UserInputType.MouseButton1 and kind ~= Enum.UserInputType.Touch then return end
+        if not canStartDrag(input.Position) then return end
+        dragStart, dragOrigin = input.Position, frame.Position
+    end)
+    connections[#connections + 1] = UserInputService.InputChanged:Connect(function(input)
+        if not dragStart then return end
+        local kind = input.UserInputType
+        if kind ~= Enum.UserInputType.MouseMovement and kind ~= Enum.UserInputType.Touch then return end
+        local delta = input.Position - dragStart
+        moveCard(dragOrigin.X.Offset + delta.X, dragOrigin.Y.Offset + delta.Y)
+    end)
+    connections[#connections + 1] = UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragStart = nil
         end
     end)
 end
@@ -488,6 +979,8 @@ local function bindCharacter(newCharacter)
     clearStateReader()
     pickStuck, destStuck, nextRemote = nil, nil, 0
     pickAttempts, pickDropOffset, pickBaseItems = 0, CFG.PickupDropStart, nil
+    destAttempts, destDropOffset = 0, CFG.PickupDropStart
+    nextAfkJump = 0
     if not character then return end
     for _, part in ipairs(character:GetDescendants()) do addPart(part) end
     partConnections[#partConnections + 1] = character.DescendantAdded:Connect(addPart)
@@ -520,7 +1013,7 @@ connections[#connections + 1] = RunService.Stepped:Connect(function()
     end
     if not validCharacter() then return end
     setCollisions(not noclip)
-    if flightControl and flightHumanoid == humanoid and not landing then
+    if flightControl and flightHumanoid == humanoid then
         humanoid.Sit = false
         humanoid.PlatformStand = true
         humanoid.AutoRotate = false
@@ -621,6 +1114,19 @@ end
 local function samePosition(a, b)
     return typeof(a) == "Vector3" and typeof(b) == "Vector3" and (a - b).Magnitude < 1
 end
+local function validVector(value)
+    if typeof(value) ~= "Vector3" then return false end
+    local x, y, z = value.X, value.Y, value.Z
+    if x ~= x or y ~= y or z ~= z then return false end
+    if x == math.huge or y == math.huge or z == math.huge then return false end
+    if x == -math.huge or y == -math.huge or z == -math.huge then return false end
+    return true
+end
+local function gameLoaded()
+    local ok, loaded = pcall(function() return game:IsLoaded() end)
+    if not ok then return true end
+    return loaded ~= false
+end
 local function pause(seconds)
     local deadline = os.clock() + seconds
     while not cancelled() and os.clock() < deadline do
@@ -637,7 +1143,6 @@ local function cruiseSpeed(distance)
 end
 
 local rayParams
-local clearanceProbes = {0.35, 0.7, 1}
 local function raycast(origin, direction)
     if typeof(workspace.Raycast) ~= "function" then return nil end
     if not rayParams then
@@ -658,99 +1163,135 @@ local function surfaceAheadY(x, z, originY)
     if hit then return hit.Position.Y end
     return nil
 end
-local function clearanceAheadY(position, direction)
-    local flat = horizontal(direction)
-    if flat.Magnitude < 0.001 then return nil end
-    flat = flat.Unit
-    local originY = position.Y + 400
-    local required
-    local wall = raycast(position + Vector3.new(0, 1, 0), flat * CFG.TerrainLookAhead)
-    if wall then
-        local top = surfaceAheadY(wall.Position.X, wall.Position.Z, originY) or wall.Position.Y
-        required = top + CFG.ObstacleClearance
-    end
-    for _, ratio in ipairs(clearanceProbes) do
-        local probe = position + flat * (CFG.TerrainLookAhead * ratio)
-        local groundY = surfaceAheadY(probe.X, probe.Z, originY)
-        if groundY then
-            local need = groundY + CFG.CruiseHeight
-            if not required or need > required then required = need end
+
+local overlapParams
+local function pointClear(position)
+    if typeof(position) ~= "Vector3" then return false end
+    local ok, hits = pcall(function()
+        if not overlapParams then
+            local created, params = pcall(function() return OverlapParams.new() end)
+            if not created or not params then return nil end
+            overlapParams = params
+            overlapParams.FilterType = Enum.RaycastFilterType.Exclude
+            pcall(function() overlapParams.MaxParts = 30 end)
         end
+        overlapParams.FilterDescendantsInstances = character and {character} or {}
+        return workspace:GetPartBoundsInBox(CFrame.new(position), Vector3.new(1.2, 4, 1.2), overlapParams)
+    end)
+    if ok and type(hits) == "table" then
+        for _, part in ipairs(hits) do
+            local collideOK, collide = pcall(function() return part.CanCollide end)
+            if collideOK and collide == true then return false end
+        end
+        return true
     end
-    return required
+    local above = raycast(position + Vector3.new(0, 7, 0), Vector3.new(0, -10, 0))
+    if above and above.Position.Y > position.Y + 3.2 then return false end
+    local chest = position + Vector3.new(0, 1.4, 0)
+    for _, direction in ipairs({
+        Vector3.new(1, 0, 0), Vector3.new(-1, 0, 0),
+        Vector3.new(0, 0, 1), Vector3.new(0, 0, -1),
+    }) do
+        if raycast(chest, direction * 1.5) then return false end
+    end
+    return true
 end
 
-local function velocityLeg(target, speed, horizontalOnly, avoidTerrain, onProgress)
+local landingOffsets = {
+    Vector3.new(4, 0, 0), Vector3.new(-4, 0, 0), Vector3.new(0, 0, 4), Vector3.new(0, 0, -4),
+    Vector3.new(3, 0, 3), Vector3.new(-3, 0, 3), Vector3.new(3, 0, -3), Vector3.new(-3, 0, -3),
+    Vector3.new(7, 0, 0), Vector3.new(-7, 0, 0), Vector3.new(0, 0, 7), Vector3.new(0, 0, -7),
+    Vector3.new(5, 0, 5), Vector3.new(-5, 0, 5), Vector3.new(5, 0, -5), Vector3.new(-5, 0, -5),
+}
+local function findLandingSpot(destination)
+    local base = Vector3.new(destination.X, destination.Y + CFG.StandOffset, destination.Z)
+    if pointClear(base) then return base end
+    local limit = CFG.InteractDistance - 1
+    for _, offset in ipairs(landingOffsets) do
+        if horizontal(offset).Magnitude <= limit then
+            local candidate = base + offset
+            if pointClear(candidate) then return candidate end
+        end
+    end
+    return base
+end
+
+local function verticalTo(targetY, speed)
+    if typeof(targetY) ~= "number" or targetY ~= targetY then return false end
+    if cancelled() or not validCharacter() then return false end
+    local movingRoot = root
+    local startY = movingRoot.Position.Y
+    if math.abs(startY - targetY) <= 1.5 then return true end
+    if not beginFlightControl() then return false end
+    noclip = true
+    setCollisions(false)
+    ensureLift(movingRoot)
+    local deadline = os.clock() + math.min(8, math.abs(targetY - startY) / math.max(speed, 1) + 3)
+    local reached = false
+    while not cancelled() and validCharacter() and root == movingRoot
+        and os.clock() < deadline do
+        local remaining = targetY - movingRoot.Position.Y
+        if math.abs(remaining) <= 1.2 then reached = true; break end
+        local vy = math.clamp(remaining * 4, -speed, speed)
+        movingRoot.AssemblyLinearVelocity = Vector3.new(0, vy, 0)
+        task.wait(CFG.FlyPoll)
+    end
+    if movingRoot.Parent then movingRoot.AssemblyLinearVelocity = Vector3.zero end
+    removeLift()
+    return reached and not cancelled() and validCharacter() and root == movingRoot
+end
+
+local function velocityLeg(target, speed, onProgress, glideY, tolerance)
     if cancelled() or not validCharacter() then return false end
     local movingRoot, start = root, root.Position
     local delta = target - start
-    local length = horizontalOnly and horizontal(delta).Magnitude or delta.Magnitude
-    local tolerance = horizontalOnly and CFG.ArriveXZ or 2
+    local length = horizontal(delta).Magnitude
+    local tolerance = tolerance or CFG.ArriveXZ
     if length <= tolerance then return true end
-    if delta.Magnitude < 0.001 then return true end
     if not beginFlightControl() then return false end
-    landing = false
     noclip = true
     setCollisions(false)
-    removeLift()
-    liftAttachment = Instance.new("Attachment")
-    liftAttachment.Name = "AD_LiftAttachment"
-    liftAttachment.Parent = movingRoot
-    lift = Instance.new("VectorForce")
-    lift.Name = "AD_GravityCompensation"
-    lift.Attachment0 = liftAttachment
-    lift.RelativeTo = Enum.ActuatorRelativeTo.World
-    lift.ApplyAtCenterOfMass = true
-    lift.Force = Vector3.new(0, movingRoot.AssemblyMass * workspace.Gravity, 0)
-    lift.Parent = movingRoot
-    local projectedDirection = horizontalOnly and horizontal(delta).Unit or delta.Unit
-    local verticalBoost, slowFactor, nextTerrain, nextReport = 0, 1, 0, 0
-    local function applyWanted()
-        local wanted
-        if horizontalOnly then
-            verticalBoost = math.clamp(verticalBoost, 0, math.min(CFG.MaxClimbBoost, speed))
-            local flatSpeed = math.sqrt(math.max(speed * speed - verticalBoost * verticalBoost, 0)) * slowFactor
-            wanted = projectedDirection * flatSpeed + Vector3.new(0, verticalBoost, 0)
-        else
-            wanted = projectedDirection * speed
+    ensureLift(movingRoot)
+    local projectedDirection = horizontal(delta).Unit
+    local nextReport = 0
+    local lastRemaining, progressAt = length, os.clock()
+    local function applyWanted(remaining)
+        local wanted = projectedDirection * speed
+        if glideY then
+            local diff = glideY - movingRoot.Position.Y
+            if math.abs(diff) > 0.5 then
+                local timeLeft = math.max(remaining / math.max(speed, 1), 0.05)
+                local vy = math.clamp(diff / timeLeft, -CFG.DescendSpeed, CFG.ClimbSpeed)
+                wanted = wanted + Vector3.new(0, vy, 0)
+            end
         end
         local current = movingRoot.AssemblyLinearVelocity
         if (current - wanted).Magnitude > speed * 0.12 then
             movingRoot.AssemblyLinearVelocity = wanted
         end
     end
-    applyWanted()
+    applyWanted(length)
     local deadline = os.clock() + math.min(CFG.FlightTimeout, delta.Magnitude / speed * 3 + 4)
     local arrived = false
+    local stalled = false
     while not cancelled() and validCharacter() and root == movingRoot
         and os.clock() < deadline do
         local now = os.clock()
         local position = movingRoot.Position
-        local remaining = horizontalOnly and xzDistance(position, target) or (position - target).Magnitude
+        local remaining = xzDistance(position, target)
         if remaining <= tolerance then arrived = true; break end
-        local displacement = horizontalOnly and horizontal(position - start) or position - start
+        if remaining < lastRemaining - 1 then
+            lastRemaining, progressAt = remaining, now
+        elseif now - progressAt > CFG.StallTimeout then
+            stalled = true
+            break
+        end
+        local displacement = horizontal(position - start)
         if displacement:Dot(projectedDirection) >= length then
             arrived = true
             break
         end
-        if horizontalOnly and avoidTerrain and now >= nextTerrain then
-            nextTerrain = now + CFG.TerrainCheck
-            local requiredY = clearanceAheadY(position, projectedDirection)
-            if requiredY and requiredY > position.Y + 2 then
-                local need = requiredY - position.Y
-                verticalBoost = math.clamp(need * 3, 40, CFG.MaxClimbBoost)
-                if need > 90 then
-                    slowFactor = 0.45
-                elseif need > 45 then
-                    slowFactor = 0.7
-                else
-                    slowFactor = 1
-                end
-            else
-                verticalBoost, slowFactor = 0, 1
-            end
-        end
-        applyWanted()
+        applyWanted(remaining)
         if onProgress and now >= nextReport then
             nextReport = now + 0.25
             onProgress(remaining, speed)
@@ -759,81 +1300,145 @@ local function velocityLeg(target, speed, horizontalOnly, avoidTerrain, onProgre
     end
     if movingRoot.Parent then movingRoot.AssemblyLinearVelocity = Vector3.zero end
     removeLift()
-    return arrived and not cancelled() and validCharacter() and root == movingRoot
+    return arrived and not cancelled() and validCharacter() and root == movingRoot, stalled
 end
 
-local function flyTo(destination, label)
+local function touchDown(surfaceY)
+    if cancelled() or not validCharacter() then return false end
+    local movingRoot = root
+    if typeof(surfaceY) ~= "number" or surfaceY ~= surfaceY then surfaceY = nil end
+    removeLift()
+    endFlightControl(true)
+    noclip = false
+    setCollisions(true)
+    movingRoot.AssemblyLinearVelocity = Vector3.new(0, -14, 0)
+    movingRoot.AssemblyAngularVelocity = Vector3.zero
+    local deadline = os.clock() + math.min(5, CFG.LandingTimeout)
+    local landed = false
+    while not cancelled() and validCharacter() and root == movingRoot
+        and os.clock() < deadline do
+        local onFloor = false
+        if humanoid then
+            local ok, floor = pcall(function() return humanoid.FloorMaterial end)
+            onFloor = ok and floor ~= nil and floor ~= Enum.Material.Air
+        end
+        local fallSpeed = math.abs(movingRoot.AssemblyLinearVelocity.Y)
+        local lowEnough = surfaceY ~= nil
+            and movingRoot.Position.Y <= surfaceY + CFG.StandOffset + 0.4
+            and fallSpeed < 4
+        if onFloor or lowEnough then
+            landed = true
+            break
+        end
+        task.wait(CFG.LandPoll)
+    end
+    return landed and not cancelled() and validCharacter() and root == movingRoot
+end
+
+local function flyTo(destination, label, showRoute)
     if typeof(destination) ~= "Vector3" or cancelled() or not validCharacter() then
         return false
     end
     local movingRoot = root
     local start = movingRoot.Position
     local distance = xzDistance(start, destination)
-    if distance <= CFG.ArriveXZ and math.abs(start.Y - (destination.Y + 3)) <= 8 then
+    if distance <= CFG.ArriveXZ and math.abs(start.Y - (destination.Y + CFG.StandOffset)) <= 8 then
         return true
     end
-    local cruiseY = math.max(start.Y, destination.Y + CFG.CruiseHeight)
+    local cruiseY = destination.Y + CFG.CruiseHeight
+    local groundY = destination.Y + CFG.StandOffset
     local speed = cruiseSpeed(distance)
-    local function report(remaining, currentSpeed)
+    local function report(_, currentSpeed)
+        if cancelled() or not validCharacter() or root ~= movingRoot then return end
+        local position = movingRoot.Position
+        local left = xzDistance(position, destination)
+        if showRoute then
+            routeProgress = 1 - math.clamp(left / math.max(distance, 1), 0, 1)
+            setBar(routeProgress)
+        end
         if not label then return end
-        status(label .. tostring(math.floor(remaining)), nil)
-        detail(string.format("còn %d | %d studs/s", math.floor(remaining), math.floor(currentSpeed + 0.5)))
+        status(label .. tostring(math.floor(left)), nil)
+        detail(string.format("cao %d | còn %d | %d studs/s",
+            math.floor(position.Y), math.floor(left), math.floor(currentSpeed + 0.5)))
     end
-    if start.Y < cruiseY - 2 then
-        local climbTarget = Vector3.new(start.X, cruiseY, start.Z)
-        if not velocityLeg(climbTarget, CFG.ClimbSpeed, false) then return false end
-    end
-    if cancelled() or not validCharacter() or root ~= movingRoot then return false end
     local arrived = xzDistance(root.Position, destination) <= CFG.ArriveXZ
+    local stalled = false
     if not arrived then
-        local horizontalTarget = Vector3.new(destination.X, root.Position.Y, destination.Z)
-        arrived = velocityLeg(horizontalTarget, speed, true, true, report)
+        local toCenter = horizontal(destination - start)
+        local direction = toCenter.Magnitude > 0.01 and toCenter.Unit or Vector3.zero
+        if distance > CFG.ApproachDistance + CFG.ArriveXZ then
+            if math.abs(start.Y - cruiseY) > 2 then
+                movingRoot.AssemblyLinearVelocity = Vector3.zero
+                movingRoot.CFrame = CFrame.new(start.X, cruiseY, start.Z)
+            end
+            if cancelled() or not validCharacter() or root ~= movingRoot then return false end
+            local entry = Vector3.new(
+                destination.X - direction.X * CFG.ApproachDistance,
+                cruiseY,
+                destination.Z - direction.Z * CFG.ApproachDistance)
+            arrived, stalled = velocityLeg(entry, speed, report)
+        end
+        if not stalled and not cancelled() and validCharacter() and root == movingRoot then
+            local position = movingRoot.Position
+            local surface = surfaceAheadY(position.X, position.Z, position.Y + 30)
+            local descended = verticalTo((surface or destination.Y) + CFG.StandOffset + CFG.DropHeight, CFG.DescendSpeed)
+            if descended and not cancelled() and validCharacter() and root == movingRoot then
+                touchDown(surface or destination.Y)
+            end
+        end
+        if not stalled and not cancelled() and validCharacter() and root == movingRoot then
+            local center = Vector3.new(destination.X, groundY, destination.Z)
+            arrived, stalled = velocityLeg(center, CFG.ApproachSpeed, report, groundY, CFG.ApproachTolerance)
+        end
     end
     for attempt = 1, 3 do
+        if stalled then break end
         if cancelled() or not validCharacter() or root ~= movingRoot then return false end
         if arrived and xzDistance(root.Position, destination) <= CFG.ArriveXZ then break end
         if xzDistance(root.Position, destination) <= CFG.ArriveXZ then arrived = true; break end
-        local correction = Vector3.new(destination.X, root.Position.Y, destination.Z)
-        arrived = velocityLeg(correction, CFG.CorrectionSpeed, true, false, report)
+        local correction = Vector3.new(destination.X, groundY, destination.Z)
+        arrived, stalled = velocityLeg(correction, CFG.ApproachSpeed, report, groundY, CFG.ApproachTolerance)
     end
     if not arrived or cancelled() or not validCharacter() or root ~= movingRoot then
         return false
     end
-    local dropY = destination.Y + CFG.LandingDropHeight
-    if movingRoot.Position.Y > dropY + 2 then
-        local dropTarget = Vector3.new(movingRoot.Position.X, dropY, movingRoot.Position.Z)
-        if not velocityLeg(dropTarget, CFG.LandingDropSpeed, false) then return false end
+    if showRoute then
+        routeProgress = 1
+        setBar(1)
     end
-    if cancelled() or not validCharacter() or root ~= movingRoot then return false end
     removeLift()
     movingRoot.AssemblyLinearVelocity = Vector3.zero
-    landing = true
-    endFlightControl(true)
+    movingRoot.AssemblyAngularVelocity = Vector3.zero
+    local landing = findLandingSpot(destination)
+    movingRoot.CFrame = CFrame.new(landing.X, landing.Y, landing.Z)
+    endFlightControl(false)
+    noclip = false
+    setCollisions(true)
     local deadline = os.clock() + CFG.LandingTimeout
     local settled = false
+    local retriedLanding = false
     while not cancelled() and validCharacter() and root == movingRoot
         and os.clock() < deadline do
-        local falling = movingRoot.AssemblyLinearVelocity
-        if falling.Y < -CFG.LandFallSpeed then
-            movingRoot.AssemblyLinearVelocity = Vector3.new(0, -CFG.LandFallSpeed, 0)
-            falling = movingRoot.AssemblyLinearVelocity
-        end
         local position = movingRoot.Position
-        local nearXZ = xzDistance(position, destination) <= CFG.ArriveXZ
-        local lead = math.clamp(math.abs(falling.Y) * 0.06, 3, 15)
-        local nearY = position.Y <= destination.Y + lead
-        if nearXZ and nearY then
-            movingRoot.AssemblyLinearVelocity = Vector3.zero
-            movingRoot.CFrame = CFrame.new(destination.X, destination.Y + 3, destination.Z)
+        local fallSpeed = math.abs(movingRoot.AssemblyLinearVelocity.Y)
+        if xzDistance(position, landing) <= CFG.ArriveXZ
+            and math.abs(position.Y - landing.Y) <= CFG.InteractVertical
+            and fallSpeed < 12 then
             settled = true
             break
         end
-        if position.Y < destination.Y - 6 then break end
+        if not retriedLanding and os.clock() > deadline - CFG.LandingTimeout * 0.4 then
+            retriedLanding = true
+            local retrySpot = findLandingSpot(destination)
+            if retrySpot ~= landing then
+                landing = retrySpot
+                movingRoot.AssemblyLinearVelocity = Vector3.zero
+                movingRoot.AssemblyAngularVelocity = Vector3.zero
+                movingRoot.CFrame = CFrame.new(landing.X, landing.Y, landing.Z)
+            end
+        end
         task.wait(CFG.LandPoll)
     end
-    noclip = false
-    setCollisions(true)
-    landing = true
     return settled and not cancelled() and validCharacter() and root == movingRoot
 end
 
@@ -844,7 +1449,6 @@ local function teleportCharacter(position)
     local movingRoot = root
     removeLift()
     endFlightControl(false)
-    landing = false
     noclip = false
     setCollisions(true)
     movingRoot.AssemblyLinearVelocity = Vector3.zero
@@ -861,24 +1465,21 @@ local function teleportCharacter(position)
     return not cancelled() and validCharacter() and root == movingRoot
 end
 
-local function teleportPickupReset(target)
-    if cancelled() or not validCharacter() or typeof(target) ~= "Vector3" then
-        return false
+local function jumpOnce()
+    if not validCharacter() then return end
+    if vim and type(vim.SendKeyEvent) == "function" then
+        pcall(function()
+            vim:SendKeyEvent(true, Enum.KeyCode.Space, false, game)
+            vim:SendKeyEvent(false, Enum.KeyCode.Space, false, game)
+        end)
     end
-    pickAttempts = pickAttempts + 1
-    pickDropOffset = math.min(pickDropOffset + CFG.PickupDropStep, CFG.PickupDropMax)
-    status("Kẹt nhặt → teleport ra xa", COLOR.stuck)
-    detail(string.format("lần %d | thả cao %d", pickAttempts, pickDropOffset))
-    local angle = math.random() * math.pi * 2
-    local away = Vector3.new(
-        target.X + math.cos(angle) * CFG.PickupResetDistance,
-        math.max(target.Y, root.Position.Y) + CFG.PickupResetHeight,
-        target.Z + math.sin(angle) * CFG.PickupResetDistance
-    )
-    if not teleportCharacter(away) then return false end
-    if not pause(CFG.PickupResetWait) then return false end
-    local drop = Vector3.new(target.X, target.Y + pickDropOffset, target.Z)
-    if not teleportCharacter(drop) then return false end
+    pcall(function()
+        humanoid.Jump = true
+        humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+    end)
+end
+
+local function waitLanded(target)
     local landed = false
     local deadline = os.clock() + CFG.PickupSettleTimeout
     while not cancelled() and validCharacter() and os.clock() < deadline do
@@ -889,13 +1490,63 @@ local function teleportPickupReset(target)
             local ok, floor = pcall(function() return humanoid.FloorMaterial end)
             onFloor = ok and Enum.Material ~= nil and floor ~= nil and floor ~= Enum.Material.Air
         end
-        if onFloor or (position.Y <= target.Y + CFG.InteractVertical and fallSpeed < 6) then
+        if position.Y <= target.Y + CFG.InteractVertical and (onFloor or fallSpeed < 6) then
             landed = true
             break
         end
         task.wait(0.05)
     end
-    detail(string.format("lần %d | thả cao %d | %s", pickAttempts, pickDropOffset,
+    return landed
+end
+
+local function dropTo(target, height)
+    local spot = findLandingSpot(target)
+    if not teleportCharacter(Vector3.new(spot.X, target.Y + height, spot.Z)) then
+        return false
+    end
+    if not pause(CFG.DropJumpDelay) then return false end
+    jumpOnce()
+    return waitLanded(target)
+end
+
+local function teleportStuckReset(target, delivering)
+    if cancelled() or not validCharacter() or typeof(target) ~= "Vector3" then
+        return false
+    end
+    local attempts, height
+    if delivering then
+        destAttempts = destAttempts + 1
+        destDropOffset = math.min(destDropOffset + CFG.PickupDropStep, CFG.PickupDropMax)
+        attempts, height = destAttempts, destDropOffset
+        status("Kẹt giao → teleport xa", COLOR.stuck)
+    else
+        pickAttempts = pickAttempts + 1
+        pickDropOffset = math.min(pickDropOffset + CFG.PickupDropStep, CFG.PickupDropMax)
+        attempts, height = pickAttempts, pickDropOffset
+        status("Kẹt nhặt → teleport xa", COLOR.stuck)
+    end
+    local far = CFG.ResetFarMin + math.random() * (CFG.ResetFarMax - CFG.ResetFarMin)
+    local angle = math.random() * math.pi * 2
+    local farX = target.X + math.cos(angle) * far
+    local farZ = target.Z + math.sin(angle) * far
+    local groundY = surfaceAheadY(farX, farZ, math.max(target.Y, root.Position.Y) + 400)
+    local away = Vector3.new(farX, (groundY or target.Y) + CFG.PickupResetHeight, farZ)
+    for _ = 1, 5 do
+        if pointClear(away) then break end
+        far = CFG.ResetFarMin + math.random() * (CFG.ResetFarMax - CFG.ResetFarMin)
+        angle = math.random() * math.pi * 2
+        farX = target.X + math.cos(angle) * far
+        farZ = target.Z + math.sin(angle) * far
+        groundY = surfaceAheadY(farX, farZ, math.max(target.Y, root.Position.Y) + 400)
+        away = Vector3.new(farX, (groundY or target.Y) + CFG.PickupResetHeight, farZ)
+    end
+    detail(string.format("lần %d | xa %d | thả cao %d", attempts, math.floor(far), height))
+    if not teleportCharacter(away) then return false end
+    if not pause(CFG.DropJumpDelay) then return false end
+    jumpOnce()
+    if not pause(CFG.PickupResetWait) then return false end
+    local landed = dropTo(target, height)
+    detail(string.format("lần %d | xa %d | thả cao %d | %s", attempts, math.floor(far), height,
         landed and "đã chạm đất" or "chờ hạ cánh"))
     return not cancelled() and validCharacter()
 end
@@ -994,48 +1645,62 @@ local function startJob(padPosition, prompt)
         return false
     end
     if not prompt.Parent or not prompt:IsDescendantOf(workspace) then return false end
-    local currentPadPosition = getPadPosition(padContainer, prompt)
-    if typeof(currentPadPosition) ~= "Vector3"
-        or xzDistance(root.Position, currentPadPosition) > CFG.InteractDistance then return false end
-    status("Đang nhận job", COLOR.start)
-    local promptOK, promptError = pcall(fireproximityprompt, prompt, 0)
-    if not promptOK then warn("[AD] Prompt: " .. tostring(promptError)); return false end
-    if not pause(CFG.PromptDelay) or not validCharacter() then return false end
-    mousePressed = true
-    local clickOK, clickError = pcall(function()
-        vim:SendMouseButtonEvent(CFG.AcceptX, CFG.AcceptY, 0, true, game, 0)
-    end)
-    local held = clickOK and pause(CFG.ClickHold)
-    local releaseOK, releaseError = releaseMouse()
-    if not clickOK or not releaseOK then
-        warn("[AD] Click: " .. tostring(clickError or releaseError))
-        return false
-    end
-    if not held or not validCharacter() then return false end
-    local deadline = os.clock() + CFG.JobConfirmTimeout
-    while not cancelled() and validCharacter() and os.clock() < deadline do
-        local ok, hasJob = readState()
-        if ok and hasJob then resetProgress(); return true end
-        task.wait(0.10)
+    for attempt = 1, 3 do
+        if cancelled() or not validCharacter() then return false end
+        if attempt > 1 then
+            status("Thử nhận job lại", COLOR.start)
+            detail(string.format("lần %d/3", attempt))
+            if not pause(0.8) then return false end
+            local refreshedPosition, refreshedPrompt = findPad()
+            if refreshedPrompt and refreshedPrompt.Parent then
+                prompt = refreshedPrompt
+                if typeof(refreshedPosition) == "Vector3" then padPosition = refreshedPosition end
+            end
+        end
+        if not prompt or not prompt.Parent or not prompt:IsDescendantOf(workspace) then
+            local refreshedPosition, refreshedPrompt = findPad()
+            if not refreshedPrompt then return false end
+            prompt = refreshedPrompt
+            if typeof(refreshedPosition) == "Vector3" then padPosition = refreshedPosition end
+        end
+        local currentPadPosition = getPadPosition(padContainer, prompt)
+        if typeof(currentPadPosition) == "Vector3" then padPosition = currentPadPosition end
+        if xzDistance(root.Position, padPosition) > CFG.InteractDistance then
+            status("Quay lại bảng nhận việc", COLOR.start)
+            if not flyTo(padPosition, "→ pad ") or cancelled() then return false end
+        end
+        status("Đang nhận job", COLOR.start)
+        local promptOK, promptError = pcall(fireproximityprompt, prompt, 0)
+        if not promptOK then
+            warn("[AD] Prompt: " .. tostring(promptError))
+        else
+            if not pause(CFG.PromptDelay) or not validCharacter() then return false end
+            mousePressed = true
+            pcall(function()
+                if type(vim.SendMouseMoveEvent) == "function" then
+                    vim:SendMouseMoveEvent(CFG.AcceptX, CFG.AcceptY, game)
+                end
+            end)
+            local clickOK, clickError = pcall(function()
+                vim:SendMouseButtonEvent(CFG.AcceptX, CFG.AcceptY, 0, true, game, 0)
+            end)
+            local held = clickOK and pause(CFG.ClickHold)
+            local releaseOK, releaseError = releaseMouse()
+            if not clickOK or not releaseOK then
+                warn("[AD] Click: " .. tostring(clickError or releaseError))
+            elseif not held or not validCharacter() then
+                return false
+            else
+                local deadline = os.clock() + CFG.JobConfirmTimeout
+                while not cancelled() and validCharacter() and os.clock() < deadline do
+                    local ok, hasJob = readState()
+                    if ok and hasJob then resetProgress(); return true end
+                    task.wait(0.10)
+                end
+            end
+        end
     end
     return false
-end
-
-local function resetZone(center)
-    if cancelled() or not validCharacter() then return false end
-    status("Kẹt → bay ra...", COLOR.stuck)
-    local height = math.max(root.Position.Y, center.Y) + 24
-    if not velocityLeg(Vector3.new(root.Position.X, height, root.Position.Z), 60, false) then
-        return false
-    end
-    local angle = math.random() * math.pi * 2
-    local offset = Vector3.new(math.cos(angle), 0, math.sin(angle)) * CFG.ResetDistance
-    if not velocityLeg(Vector3.new(center.X + offset.X, height, center.Z + offset.Z), 40, true) then
-        return false
-    end
-    if not pause(0.15) then return false end
-    status("Kẹt → quay lại...", COLOR.stuck)
-    return flyTo(center, "→ quay lại ")
 end
 
 local function sendRemote(remote)
@@ -1073,12 +1738,53 @@ local function refreshRemotes()
     end
 end
 
+local function finishSplash()
+    if ready then return end
+    hideSplash()
+    status("Auto Delivery đã sẵn sàng", COLOR.idle)
+    detail("")
+    setBar(0)
+    setRunButton(true)
+    nextTick, nextJob = 0, 0
+end
+local function updateStartup(now)
+    if ready then return end
+    local elapsed = now - startupStarted
+    if not gameLoaded() then
+        setSplash("Đang tải game...", 0.10 + math.min(0.08, elapsed * 0.03))
+    elseif not validCharacter() then
+        setSplash("Đang chờ nhân vật...", 0.34)
+    else
+        local ok, active = readState()
+        if not ok then
+            setSplash(stateRequest and "Đang đọc dữ liệu nhiệm vụ..." or "Chưa đọc được dữ liệu nhiệm vụ", 0.58)
+        else
+            local padPosition = findPad()
+            if padPosition then
+                setSplash(active and "Đã nhận nhiệm vụ, bắt đầu chạy..." or "Sẵn sàng nhận nhiệm vụ", 1)
+            else
+                setSplash(active and "Đang chuẩn bị điểm nhận..." or "Đang tìm bảng nhận việc...", 0.8)
+            end
+        end
+    end
+    local done = elapsed >= 0.35 and splashTarget >= 0.999
+    local fallback = elapsed >= 15 or (elapsed >= 3.5 and splashTarget >= 0.75)
+    if done or fallback then finishSplash() end
+end
+
 connections[#connections + 1] = RunService.Heartbeat:Connect(function()
     if stopping then return end
     if _G.AD_STOP then session.Stop("Đã dừng"); return end
     local now = os.clock()
+    if not ready then
+        if now < nextTick then return end
+        nextTick = now + CFG.TickInterval
+        updateStartup(now)
+        return
+    end
     if now < nextTick then return end
     nextTick = now + CFG.TickInterval
+    if not gameLoaded() then status("Chờ game tải...", COLOR.idle); return end
     for remote, call in pairs(pending) do
         if now >= call.deadline then
             cancelThread(call.thread)
@@ -1095,7 +1801,7 @@ connections[#connections + 1] = RunService.Heartbeat:Connect(function()
     end
     if not active then
         resetProgress()
-        setBar(0, COLOR.idle)
+        setBar(0)
         if now < nextJob then return end
         local position, prompt = findPad()
         if not position then status("Chưa tìm thấy DeliveryJobPad", COLOR.error); return end
@@ -1125,11 +1831,21 @@ connections[#connections + 1] = RunService.Heartbeat:Connect(function()
     if type(lastItems) == "number" and items > lastItems then
         pickAttempts, pickDropOffset, pickBaseItems = 0, CFG.PickupDropStart, nil
     end
+    if destinationChanged or (type(lastItems) == "number" and items < lastItems) then
+        destAttempts, destDropOffset = 0, CFG.PickupDropStart
+        if destinationChanged then routeProgress = nil end
+    end
     lastItems, lastCapacity = items, capacity
-    if typeof(pickup) == "Vector3" then lastPickup = pickup end
-    if typeof(destination) == "Vector3" then lastDestination = destination end
+    if validVector(pickup) then
+        if not validVector(lastPickup) or not samePosition(lastPickup, pickup) then pickupSince = now end
+        lastPickup = pickup
+    end
+    if validVector(destination) then
+        if not validVector(lastDestination) or not samePosition(lastDestination, destination) then destinationSince = now end
+        lastDestination = destination
+    end
     if items >= capacity then phase = "delivery"
-    elseif phase == "delivery" and items == 0 then phase = "pickup"
+    elseif phase == "delivery" and items == 0 then phase = "pickup"; routeProgress = nil
     elseif phase == nil then phase = "pickup" end
     session.Progress = {
         phase = phase, items = items, capacity = capacity,
@@ -1141,14 +1857,24 @@ connections[#connections + 1] = RunService.Heartbeat:Connect(function()
     local color = delivering and COLOR.delivery or COLOR.pickup
     local mode = capacity == 8 and "Hard" or capacity == 4 and "Normal" or "Custom"
     detail(string.format("items %d/%d | %s", items, capacity, mode))
-    setBar(items / capacity, color)
-    if typeof(target) ~= "Vector3" then
+    local barFraction = items / capacity
+    if delivering and routeProgress then barFraction = routeProgress end
+    setBar(barFraction)
+    if not validVector(target) then
         pickStuck, destStuck = nil, nil
         status(delivering and "Chờ dest..." or "Chờ pickup...", COLOR.idle)
         return
     end
+    if now - (pickupSince or 0) < 0.20 then
+        status("Chờ dữ liệu điểm nhận...", COLOR.idle)
+        return
+    end
+    if delivering and now - (destinationSince or 0) < 0.20 then
+        status("Chờ dữ liệu điểm giao...", COLOR.idle)
+        return
+    end
     local distance = xzDistance(root.Position, target)
-    local vertical = math.abs(root.Position.Y - (target.Y + 3))
+    local vertical = math.abs(root.Position.Y - (target.Y + CFG.StandOffset))
     local landed = false
     if humanoid then
         local floorOK, floor = pcall(function() return humanoid.FloorMaterial end)
@@ -1164,7 +1890,7 @@ connections[#connections + 1] = RunService.Heartbeat:Connect(function()
         pickStuck, destStuck = nil, nil
         status((delivering and "→ giao " or "→ nhặt ") .. tostring(math.floor(distance)), color)
         runWorker("travel", function()
-            return flyTo(target, delivering and "→ giao " or "→ nhặt ")
+            return flyTo(target, delivering and "→ giao " or "→ nhặt ", delivering)
         end)
         return
     end
@@ -1172,7 +1898,7 @@ connections[#connections + 1] = RunService.Heartbeat:Connect(function()
         destStuck = destStuck or now
         pickStuck = nil
         if now - destStuck >= CFG.StuckTimeout then
-            runWorker("travel", function() return resetZone(target) end)
+            runWorker("travel", function() return teleportStuckReset(target, true) end)
             return
         end
     else
@@ -1189,9 +1915,13 @@ connections[#connections + 1] = RunService.Heartbeat:Connect(function()
             pickBaseItems, pickStuck = items, now
         end
         if items <= pickBaseItems and now - pickStuck >= CFG.StuckTimeout then
-            runWorker("travel", function() return teleportPickupReset(target) end)
+            runWorker("travel", function() return teleportStuckReset(target, false) end)
             return
         end
+    end
+    if now >= nextAfkJump and vertical <= CFG.InteractVertical then
+        nextAfkJump = now + CFG.AfkJumpInterval
+        jumpOnce()
     end
     if vertical > CFG.InteractVertical then
         status("Chờ hạ cánh / kiểm tra Y", COLOR.stuck)
